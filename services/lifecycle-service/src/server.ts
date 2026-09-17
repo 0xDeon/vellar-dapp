@@ -4,6 +4,11 @@ import { registerHealth, registerMetrics, domainMetrics, recordOutcome } from "@
 import { buildCleanupSteps, buildMergeStep } from "./builder";
 import type { AccountReader } from "./horizon";
 import { buildCleanupPlan, isClassicAccountId } from "./planner";
+import { paymentMiddleware, x402ResourceServer } from "@x402/fastify";
+import { ExactStellarScheme } from "@x402/stellar/exact/server";
+import { HTTPFacilitatorClient } from "@x402/core/server";
+import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
+
 
 // Lifecycle API (idea.md §11): inspect + plan. Execute/merge land with the
 // signing-flow decision (see BUILD-PLAN — docs are ambiguous on who signs
@@ -89,6 +94,48 @@ export function buildServer(deps: LifecycleServiceDeps): FastifyInstance {
 
   // Builds UNSIGNED cleanup transactions (decisions.md option A): the user
   // signs them in the wallet that holds the old account's key.
+  // --- Vellar x402: payment gate for POST /lifecycle/execute ---
+  // payTo is read from the "vellar-x402.payToAddress" VS Code setting at runtime.
+  const PAYMENT_CONFIG = {
+    payToAddress: "GBBA3HN2PNOAJGR6R5VY34SQFDFTZFQIGDPYATJB34UXXFUHVR4KZRAZ",
+  };
+
+  const x402FacilitatorClient = new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" });
+  const x402Server = new x402ResourceServer(x402FacilitatorClient)
+    .register("stellar:testnet", new ExactStellarScheme())
+    .registerExtension(bazaarResourceServerExtension);
+
+  const x402Routes = {
+    "POST /lifecycle/execute": {
+      accepts: {
+        scheme: "exact" as const,
+        price: "$0.05",
+        network: "stellar:testnet" as const,
+        payTo: PAYMENT_CONFIG.payToAddress,
+      },
+      description: "@vellar/lifecycle-service — /lifecycle/execute ($0.05 USDC)", // TODO: add the actual resource description
+      serviceName: "@vellar/lifecycle-service",
+      tags: ["api", "x402"],
+      extensions: declareDiscoveryExtension({
+        input: {
+          // TODO: example values for this endpoint's query/body
+          // parameters, e.g. { topic: "perseverance" }
+        },
+        inputSchema: {
+          // TODO: JSON schema for those parameters, e.g.
+          // { properties: { topic: { type: "string" } } }
+        },
+        output: {
+          example: {
+            // TODO: add a real example response object,
+            // e.g. { result: "..." }
+          },
+        },
+      }),
+    },
+  };
+  // --- end Vellar x402 setup ---
+  paymentMiddleware(app, x402Routes, x402Server); // Vellar x402: gate the route below
   app.post("/lifecycle/execute", async (request, reply) => {
     const parsed = planBodySchema.safeParse(request.body);
     if (!parsed.success) {
