@@ -6,7 +6,8 @@ import type { AccountReader } from "./horizon";
 import { buildCleanupPlan, isClassicAccountId } from "./planner";
 import { paymentMiddleware, x402ResourceServer } from "@x402/fastify";
 import { ExactStellarScheme } from "@x402/stellar/exact/server";
-import { HTTPFacilitatorClient } from "@x402/core/server";
+import { HTTPFacilitatorClient, type FacilitatorClient } from "@x402/core/server";
+import type { SupportedResponse } from "@x402/core/types";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
 
 
@@ -26,6 +27,61 @@ const planBodySchema = z.object({
 export interface LifecycleServiceDeps {
   reader: AccountReader;
   networkPassphrase?: string;
+  /** x402 facilitator client for the /lifecycle/execute payment gate. Defaults
+   * to a real HTTPFacilitatorClient hitting vellar-facilitator. Tests inject
+   * `fakeFacilitatorClient()` instead: x402ResourceServer.initialize() (run on
+   * every buildServer() call) otherwise makes a real network call to the live
+   * facilitator per test, which is slow and flaky against a cold Render
+   * instance — see docs/decisions.md. */
+  x402FacilitatorClient?: FacilitatorClient;
+}
+
+function capturedSupportedResponse(): SupportedResponse {
+  return {
+    kinds: [
+      { x402Version: 2, scheme: "exact", network: "stellar:pubnet", extra: { areFeesSponsored: true } },
+      {
+        x402Version: 2,
+        scheme: "upto",
+        network: "stellar:pubnet",
+        extra: {
+          uptoContract: "CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN",
+          areFeesSponsored: true,
+        },
+      },
+    ],
+    extensions: ["bazaar"],
+    signers: {
+      "stellar:*": [
+        "GDEZOW5M5ODU5SMPXC2XQFAHLRQKK7SSYXDZKMAF7ZKPCAX6KFBTFQZS",
+        "GDAP7ZVV7B6YSATUMPBQKZPTS4GODE5ZR3BTBTBDNNBXMPGSOA2TLVUS",
+        "GAJFQEVBZCKKFBCCFFUMRHB45CB442JO27LNZ7KIQQMK6GKM7G5R5SOL",
+        "GAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKAC",
+        "GCHPKEKCK7KPWNO2GYGFEGVP2WJQAAOYT6YGDBXHEVF4JCQJXMQTK6KT",
+        "GBB7PVDR642MJSALMD3PN4SAPZHUJP555XQMFJJNUH3AN33UQY7FVL3H",
+      ],
+    },
+  };
+}
+
+/** A FacilitatorClient that answers getSupported() from a locally-captured
+ * snapshot instead of a live network call, so x402ResourceServer.initialize()
+ * (invoked by paymentMiddleware on every buildServer() call) doesn't hit the
+ * real facilitator in tests. verify()/settle() reject: no test here exercises
+ * a real paid request, so a call reaching them signals a test that needs a
+ * different seam (e.g. a signed test payment), not this fake. */
+export function fakeFacilitatorClient(): FacilitatorClient {
+  return {
+    async getSupported() {
+      return capturedSupportedResponse();
+    },
+    async verify() {
+      throw new Error("fakeFacilitatorClient: verify() is not supported — inject a real client to test payment.");
+    },
+    async settle() {
+      throw new Error("fakeFacilitatorClient: settle() is not supported — inject a real client to test payment.");
+    },
+  };
 }
 
 const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
@@ -95,40 +151,69 @@ export function buildServer(deps: LifecycleServiceDeps): FastifyInstance {
   // Builds UNSIGNED cleanup transactions (decisions.md option A): the user
   // signs them in the wallet that holds the old account's key.
   // --- Vellar x402: payment gate for POST /lifecycle/execute ---
-  // payTo is read from the "vellar-x402.payToAddress" VS Code setting at runtime.
   const PAYMENT_CONFIG = {
-    payToAddress: "GBBA3HN2PNOAJGR6R5VY34SQFDFTZFQIGDPYATJB34UXXFUHVR4KZRAZ",
+    payToAddress: "GD6TC7QY35TZ5VHPMGCPQUDHRBLXZEI3HCBLHTBBAY2RX3L6PBWI5C2O",
+    // USDC mainnet SAC (matches @x402/stellar's DEFAULT_ASSETS for stellar:pubnet).
+    asset: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
   };
 
-  const x402FacilitatorClient = new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" });
+  const x402FacilitatorClient =
+    deps.x402FacilitatorClient ??
+    new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" });
   const x402Server = new x402ResourceServer(x402FacilitatorClient)
-    .register("stellar:testnet", new ExactStellarScheme())
+    .register("stellar:pubnet", new ExactStellarScheme())
     .registerExtension(bazaarResourceServerExtension);
 
   const x402Routes = {
     "POST /lifecycle/execute": {
       accepts: {
         scheme: "exact" as const,
-        price: "$0.05",
-        network: "stellar:testnet" as const,
+        // 0.50 USDC. `price` is a decimal-dollar Money string, not raw base
+        // units — @x402/stellar's defaultMoneyConversion multiplies this by
+        // the asset's decimals (7 for USDC) to get the on-chain amount.
+        price: "$0.50",
+        network: "stellar:pubnet" as const,
         payTo: PAYMENT_CONFIG.payToAddress,
+        maxTimeoutSeconds: 300,
       },
-      description: "@vellar/lifecycle-service — /lifecycle/execute ($0.05 USDC)", // TODO: add the actual resource description
+      description: "Build unsigned Stellar transaction steps for account cleanup and migration",
       serviceName: "@vellar/lifecycle-service",
-      tags: ["api", "x402"],
+      tags: ["api", "x402", "stellar", "account-cleanup"],
       extensions: declareDiscoveryExtension({
+        bodyType: "json",
         input: {
-          // TODO: example values for this endpoint's query/body
-          // parameters, e.g. { topic: "perseverance" }
+          accountId: "GAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKAC",
+          destination: "GBB7PVDR642MJSALMD3PN4SAPZHUJP555XQMFJJNUH3AN33UQY7FVL3H",
         },
         inputSchema: {
-          // TODO: JSON schema for those parameters, e.g.
-          // { properties: { topic: { type: "string" } } }
+          properties: {
+            accountId: {
+              type: "string",
+              description: "Classic (G...) Stellar account to close and merge",
+            },
+            destination: {
+              type: "string",
+              description: "Classic (G...) Stellar account to receive the merged balance",
+            },
+          },
         },
         output: {
           example: {
-            // TODO: add a real example response object,
-            // e.g. { result: "..." }
+            steps: [
+              {
+                title: "Clean up the account",
+                description: "One transaction that will: merge account into destination.",
+                xdr: "AAAAAgAAAAA...",
+                hash: "3f9c2e...",
+              },
+            ],
+            plan: {
+              accountId: "GAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKAC",
+              destination: "GBB7PVDR642MJSALMD3PN4SAPZHUJP555XQMFJJNUH3AN33UQY7FVL3H",
+              blockers: [],
+              estimatedTransactions: 1,
+              mergeReady: true,
+            },
           },
         },
       }),

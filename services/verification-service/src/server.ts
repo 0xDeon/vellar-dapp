@@ -5,7 +5,8 @@ import { registerHealth, registerMetrics } from "@vellar/service-kit";
 import type { VerificationRecord } from "@vellar/types";
 import { paymentMiddleware, x402ResourceServer } from "@x402/fastify";
 import { ExactStellarScheme } from "@x402/stellar/exact/server";
-import { HTTPFacilitatorClient } from "@x402/core/server";
+import { HTTPFacilitatorClient, type FacilitatorClient } from "@x402/core/server";
+import type { SupportedResponse } from "@x402/core/types";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
 
 
@@ -168,6 +169,65 @@ export interface VerificationServiceDeps {
    * with 429 (M7 queue-depth cap). This is the real anti-flood control on the
    * last unmetered unauthenticated write path. Default 1000. */
   maxActiveQueue?: number;
+  /** x402 facilitator client for the /verification/:contractId payment gate.
+   * Defaults to a real HTTPFacilitatorClient hitting vellar-facilitator.
+   * Tests inject `fakeFacilitatorClient()` instead: x402ResourceServer.initialize()
+   * (run on every buildServer() call) otherwise makes a real network call to the
+   * live facilitator per test, which is slow and flaky against a cold Render
+   * instance — see docs/decisions.md. */
+  x402FacilitatorClient?: FacilitatorClient;
+}
+
+/** getSupported() response captured from the live facilitator
+ * (curl https://vellar-facilitator.onrender.com/supported, 2026-09-18) for use
+ * by fakeFacilitatorClient() below. Re-capture if the facilitator's supported
+ * kinds/extensions change. */
+function capturedSupportedResponse(): SupportedResponse {
+  return {
+    kinds: [
+      { x402Version: 2, scheme: "exact", network: "stellar:pubnet", extra: { areFeesSponsored: true } },
+      {
+        x402Version: 2,
+        scheme: "upto",
+        network: "stellar:pubnet",
+        extra: {
+          uptoContract: "CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN",
+          areFeesSponsored: true,
+        },
+      },
+    ],
+    extensions: ["bazaar"],
+    signers: {
+      "stellar:*": [
+        "GDEZOW5M5ODU5SMPXC2XQFAHLRQKK7SSYXDZKMAF7ZKPCAX6KFBTFQZS",
+        "GDAP7ZVV7B6YSATUMPBQKZPTS4GODE5ZR3BTBTBDNNBXMPGSOA2TLVUS",
+        "GAJFQEVBZCKKFBCCFFUMRHB45CB442JO27LNZ7KIQQMK6GKM7G5R5SOL",
+        "GAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKAC",
+        "GCHPKEKCK7KPWNO2GYGFEGVP2WJQAAOYT6YGDBXHEVF4JCQJXMQTK6KT",
+        "GBB7PVDR642MJSALMD3PN4SAPZHUJP555XQMFJJNUH3AN33UQY7FVL3H",
+      ],
+    },
+  };
+}
+
+/** A FacilitatorClient that answers getSupported() from a locally-captured
+ * snapshot instead of a live network call, so x402ResourceServer.initialize()
+ * (invoked by paymentMiddleware on every buildServer() call) doesn't hit the
+ * real facilitator in tests. verify()/settle() reject: no test here exercises
+ * a real paid request, so a call reaching them signals a test that needs a
+ * different seam (e.g. a signed test payment), not this fake. */
+export function fakeFacilitatorClient(): FacilitatorClient {
+  return {
+    async getSupported() {
+      return capturedSupportedResponse();
+    },
+    async verify() {
+      throw new Error("fakeFacilitatorClient: verify() is not supported — inject a real client to test payment.");
+    },
+    async settle() {
+      throw new Error("fakeFacilitatorClient: settle() is not supported — inject a real client to test payment.");
+    },
+  };
 }
 
 export function buildServer(deps: VerificationServiceDeps = {}): FastifyInstance {
@@ -250,9 +310,11 @@ export function buildServer(deps: VerificationServiceDeps = {}): FastifyInstance
     payToAddress: "GBBA3HN2PNOAJGR6R5VY34SQFDFTZFQIGDPYATJB34UXXFUHVR4KZRAZ",
   };
 
-  const x402FacilitatorClient = new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" });
+  const x402FacilitatorClient =
+    deps.x402FacilitatorClient ??
+    new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" });
   const x402Server = new x402ResourceServer(x402FacilitatorClient)
-    .register("stellar:testnet", new ExactStellarScheme())
+    .register("stellar:pubnet", new ExactStellarScheme())
     .registerExtension(bazaarResourceServerExtension);
 
   const x402Routes = {
@@ -260,25 +322,42 @@ export function buildServer(deps: VerificationServiceDeps = {}): FastifyInstance
       accepts: {
         scheme: "exact" as const,
         price: "$0.05",
-        network: "stellar:testnet" as const,
+        network: "stellar:pubnet" as const,
         payTo: PAYMENT_CONFIG.payToAddress,
+        maxTimeoutSeconds: 300,
       },
-      description: "@vellar/verification-service — /verification/:contractId ($0.05 USDC)", // TODO: add the actual resource description
+      description:
+        "Returns the full contract-verification history (reproducible-build source-verification records) for a Soroban contract.",
       serviceName: "@vellar/verification-service",
-      tags: ["api", "x402"],
+      tags: ["api", "x402", "stellar", "contract-verification"],
       extensions: declareDiscoveryExtension({
-        input: {
-          // TODO: example values for this endpoint's query/body
-          // parameters, e.g. { topic: "perseverance" }
+        pathParams: {
+          contractId: "CAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKACAAAA",
         },
-        inputSchema: {
-          // TODO: JSON schema for those parameters, e.g.
-          // { properties: { topic: { type: "string" } } }
+        pathParamsSchema: {
+          properties: {
+            contractId: {
+              type: "string",
+              description: "Soroban contract address (C...) to look up verification history for",
+            },
+          },
         },
         output: {
           example: {
-            // TODO: add a real example response object,
-            // e.g. { result: "..." }
+            contractId: "CAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKACAAAA",
+            records: [
+              {
+                id: "rec_01HXYZ",
+                status: "verified",
+                sourceType: "repo",
+                repoUrl: "https://github.com/org/contract",
+                commitHash: "a1b2c3d",
+                toolchainVersion: "1.81.0",
+                statusDetail: "Build reproduced; WASM hash matches on-chain contract.",
+                createdAt: "2026-09-01T12:00:00.000Z",
+                updatedAt: "2026-09-01T12:03:00.000Z",
+              },
+            ],
           },
         },
       }),
@@ -322,7 +401,10 @@ export function buildServer(deps: VerificationServiceDeps = {}): FastifyInstance
 
 /** Strip internal-only fields (archive ref, lockfile hash) from API responses —
  * the public record is the @vellar/types shape plus the build log. */
-function toPublic(
+// Exported so the redaction guarantee (H3/FIX 6) can be unit-tested directly:
+// the /verification/:contractId route is x402-gated, so an unauthenticated
+// test request can no longer reach this function through the HTTP layer.
+export function toPublic(
   record: VerificationRecordInternal,
 ): VerificationRecord & { statusDetail?: string } {
   // Strip the internal fields AND the private `log` (H3/FIX 6): only the
