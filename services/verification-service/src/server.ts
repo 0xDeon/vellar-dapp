@@ -3,6 +3,11 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
 import { registerHealth, registerMetrics } from "@vellar/service-kit";
 import type { VerificationRecord } from "@vellar/types";
+import { paymentMiddleware, x402ResourceServer } from "@x402/fastify";
+import { ExactStellarScheme } from "@x402/stellar/exact/server";
+import { HTTPFacilitatorClient } from "@x402/core/server";
+import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
+
 
 // Verification API (idea.md §11, technical-doc.md §5.5/§7.6): a developer submits
 // a contract's source (repo+commit or upload) and build metadata; the service
@@ -239,6 +244,48 @@ export function buildServer(deps: VerificationServiceDeps = {}): FastifyInstance
   });
 
   // GET /verification/:contractId — full verification history for a contract.
+  // --- Vellar x402: payment gate for GET /verification/:contractId ---
+  // payTo is read from the "vellar-x402.payToAddress" VS Code setting at runtime.
+  const PAYMENT_CONFIG = {
+    payToAddress: "GBBA3HN2PNOAJGR6R5VY34SQFDFTZFQIGDPYATJB34UXXFUHVR4KZRAZ",
+  };
+
+  const x402FacilitatorClient = new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" });
+  const x402Server = new x402ResourceServer(x402FacilitatorClient)
+    .register("stellar:testnet", new ExactStellarScheme())
+    .registerExtension(bazaarResourceServerExtension);
+
+  const x402Routes = {
+    "GET /verification/:contractId": {
+      accepts: {
+        scheme: "exact" as const,
+        price: "$0.05",
+        network: "stellar:testnet" as const,
+        payTo: PAYMENT_CONFIG.payToAddress,
+      },
+      description: "@vellar/verification-service — /verification/:contractId ($0.05 USDC)", // TODO: add the actual resource description
+      serviceName: "@vellar/verification-service",
+      tags: ["api", "x402"],
+      extensions: declareDiscoveryExtension({
+        input: {
+          // TODO: example values for this endpoint's query/body
+          // parameters, e.g. { topic: "perseverance" }
+        },
+        inputSchema: {
+          // TODO: JSON schema for those parameters, e.g.
+          // { properties: { topic: { type: "string" } } }
+        },
+        output: {
+          example: {
+            // TODO: add a real example response object,
+            // e.g. { result: "..." }
+          },
+        },
+      }),
+    },
+  };
+  // --- end Vellar x402 setup ---
+  paymentMiddleware(app, x402Routes, x402Server); // Vellar x402: gate the route below
   app.get("/verification/:contractId", async (request, reply) => {
     const parsed = contractIdSchema.safeParse(
       (request.params as { contractId: string }).contractId,

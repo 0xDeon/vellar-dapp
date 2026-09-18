@@ -451,6 +451,18 @@ importers:
       '@vellar/types':
         specifier: workspace:*
         version: link:../../packages/types
+      '@x402/core':
+        specifier: ^2.26.0
+        version: 2.26.0
+      '@x402/extensions':
+        specifier: ^2.26.0
+        version: 2.26.0(typescript@5.9.3)
+      '@x402/fastify':
+        specifier: ^2.26.0
+        version: 2.26.0(fastify@5.12.3)(typescript@5.9.3)
+      '@x402/stellar':
+        specifier: ^2.26.0
+        version: 2.26.0
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(pg@8.22.0)
@@ -7906,7 +7918,7 @@ snapshots:
 
   sac-sdk@0.4.3:
     dependencies:
-      '@stellar/stellar-sdk': 16.0.1
+      '@stellar/stellar-sdk': 16.3.0
       buffer: 6.0.3
     transitivePeerDependencies:
       - debug
