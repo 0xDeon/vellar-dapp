@@ -28,7 +28,13 @@ export interface GatewayOptions {
   rateLimitWindowMs?: number;
   /** Max request body size in bytes. Default 1 MiB; env MAX_BODY_BYTES. */
   maxBodyBytes?: number;
-  /** Per-request timeout in ms (connection-level). Default 30_000. */
+  /** Per-request timeout in ms (connection-level). Default 310_000 — must
+   * stay >= the x402 payment gate's maxTimeoutSeconds (300s on
+   * /lifecycle/execute and /verification/:contractId) or the gateway kills a
+   * legitimate, still-settling paid request before the facilitator responds
+   * (confirmed empirically: a slow-but-correct proxied response gets cut at
+   * exactly this timeout, independent of anything downstream). Env
+   * REQUEST_TIMEOUT_MS. */
   requestTimeoutMs?: number;
 }
 
@@ -51,7 +57,7 @@ export function buildServer(options: GatewayOptions = {}): FastifyInstance {
   const corsOrigin = corsOrigins.length === 1 ? corsOrigins[0] : corsOrigins;
 
   const maxBodyBytes = options.maxBodyBytes ?? numEnv("MAX_BODY_BYTES", 1024 * 1024);
-  const requestTimeoutMs = options.requestTimeoutMs ?? numEnv("REQUEST_TIMEOUT_MS", 30_000);
+  const requestTimeoutMs = options.requestTimeoutMs ?? numEnv("REQUEST_TIMEOUT_MS", 310_000);
   const rateLimitMax = options.rateLimitMax ?? numEnv("RATE_LIMIT_MAX", 120);
   const rateLimitWindowMs = options.rateLimitWindowMs ?? numEnv("RATE_LIMIT_WINDOW_MS", 60_000);
 
