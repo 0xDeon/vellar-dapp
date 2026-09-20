@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import { registerHealth, registerMetrics } from "@vellar/service-kit";
+import { registerHealth, registerMetrics, publicBaseUrlFromEnv } from "@vellar/service-kit";
 import type { VerificationRecord } from "@vellar/types";
 import { paymentMiddleware, x402ResourceServer } from "@x402/fastify";
 import { ExactStellarScheme } from "@x402/stellar/exact/server";
@@ -310,6 +310,17 @@ export function buildServer(deps: VerificationServiceDeps = {}): FastifyInstance
     payToAddress: "GBBA3HN2PNOAJGR6R5VY34SQFDFTZFQIGDPYATJB34UXXFUHVR4KZRAZ",
   };
 
+  // @x402/fastify derives the published resource.url from the INBOUND
+  // request's Host header when no explicit `resource` is given — behind
+  // api-gateway's proxy (which doesn't rewrite Host) that's this service's
+  // own internal bind address, not a public one. This exact defect published
+  // "localhost:4002" for /lifecycle/execute to the public mainnet Bazaar
+  // catalog before it was caught (see docs/decisions.md); this route uses
+  // the identical mechanism and would repeat it the moment it's registered.
+  // publicBaseUrlFromEnv() throws and refuses to boot rather than silently
+  // publishing an unreachable URL.
+  const x402PublicResourceUrl = `${publicBaseUrlFromEnv()}/verification/:contractId`;
+
   const x402FacilitatorClient =
     deps.x402FacilitatorClient ??
     new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" });
@@ -319,6 +330,7 @@ export function buildServer(deps: VerificationServiceDeps = {}): FastifyInstance
 
   const x402Routes = {
     "GET /verification/:contractId": {
+      resource: x402PublicResourceUrl,
       accepts: {
         scheme: "exact" as const,
         price: "$0.05",

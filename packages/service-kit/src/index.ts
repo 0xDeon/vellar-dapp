@@ -26,6 +26,13 @@ export {
 } from "./network-config";
 
 export {
+  validatePublicResourceUrl,
+  publicBaseUrlFromEnv,
+  X402ResourceUrlError,
+  type ValidatePublicResourceUrlOptions,
+} from "./x402-resource-url";
+
+export {
   withinCeiling,
   createUnavailableBudget,
   budgetLimitsFromEnv,

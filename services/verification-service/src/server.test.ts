@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import {
   buildServer,
@@ -15,6 +15,22 @@ import {
 const C1 = "CAFK7NMQOT7G2SKMREDUII3EOK4APIY54WIK6CVGY72XWFE76YFRDF67";
 const C2 = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
 const G1 = "GCMCEGOUVALP2H6LTY7IPUUMSFKDQUMK3SDU5DI7LETNEZZKHRIIALKM";
+
+// buildServer() calls publicBaseUrlFromEnv() at construction time (see
+// docs/decisions.md — fails closed on purpose so a missing public URL never
+// falls back to publishing an internal bind address). Tests need a real,
+// valid value in the environment for that call to succeed.
+const PREVIOUS_RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
+beforeAll(() => {
+  process.env.RENDER_EXTERNAL_URL = "https://vellar-backend.onrender.com";
+});
+afterAll(() => {
+  if (PREVIOUS_RENDER_EXTERNAL_URL === undefined) {
+    delete process.env.RENDER_EXTERNAL_URL;
+  } else {
+    process.env.RENDER_EXTERNAL_URL = PREVIOUS_RENDER_EXTERNAL_URL;
+  }
+});
 
 let app: FastifyInstance | undefined;
 afterEach(async () => {
@@ -409,5 +425,41 @@ describe("createMemoryVerificationRepository", () => {
     expect(c1.map((r) => r.id)).toEqual(["b", "a"]);
     const c2 = await repo.findByContract(C2);
     expect(c2.map((r) => r.id)).toEqual(["c"]);
+  });
+});
+
+describe("x402 public resource URL guard (docs/decisions.md — localhost catalog incident)", () => {
+  it("buildServer() refuses to start when no public base URL is configured", () => {
+    const previous = process.env.RENDER_EXTERNAL_URL;
+    delete process.env.RENDER_EXTERNAL_URL;
+    try {
+      expect(() => build()).toThrow(/No public base URL configured/);
+    } finally {
+      if (previous === undefined) delete process.env.RENDER_EXTERNAL_URL;
+      else process.env.RENDER_EXTERNAL_URL = previous;
+    }
+  });
+
+  it("buildServer() refuses to start with the exact localhost value from the incident", () => {
+    const previous = process.env.RENDER_EXTERNAL_URL;
+    process.env.RENDER_EXTERNAL_URL = "http://localhost:4002";
+    try {
+      expect(() => build()).toThrow(/localhost:4002/);
+    } finally {
+      if (previous === undefined) delete process.env.RENDER_EXTERNAL_URL;
+      else process.env.RENDER_EXTERNAL_URL = previous;
+    }
+  });
+
+  it("registers the real public URL (not localhost) once /verification/:contractId is discoverable", async () => {
+    const { app } = build();
+    const res = await app.inject({ method: "GET", url: `/verification/${C1}` });
+    expect(res.statusCode).toBe(402);
+    const challengeB64 = res.headers["payment-required"] as string;
+    const challenge = JSON.parse(Buffer.from(challengeB64, "base64").toString("utf8"));
+    expect(challenge.resource.url).toBe(
+      "https://vellar-backend.onrender.com/verification/:contractId",
+    );
+    expect(challenge.resource.url).not.toContain("localhost");
   });
 });

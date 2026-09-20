@@ -1,6 +1,12 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import { registerHealth, registerMetrics, domainMetrics, recordOutcome } from "@vellar/service-kit";
+import {
+  registerHealth,
+  registerMetrics,
+  domainMetrics,
+  recordOutcome,
+  publicBaseUrlFromEnv,
+} from "@vellar/service-kit";
 import { buildCleanupSteps, buildMergeStep } from "./builder";
 import type { AccountReader } from "./horizon";
 import { buildCleanupPlan, isClassicAccountId } from "./planner";
@@ -157,6 +163,15 @@ export function buildServer(deps: LifecycleServiceDeps): FastifyInstance {
     asset: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
   };
 
+  // @x402/fastify derives the published resource.url from the INBOUND
+  // request's Host header when no explicit `resource` is given — behind
+  // api-gateway's proxy (which doesn't rewrite Host) that's the service's
+  // own internal bind address, not a public one. Registered "localhost:4002"
+  // to the public mainnet Bazaar catalog before this was caught (see
+  // docs/decisions.md). publicBaseUrlFromEnv() throws and refuses to boot
+  // rather than silently publishing an unreachable URL.
+  const x402PublicResourceUrl = `${publicBaseUrlFromEnv()}/lifecycle/execute`;
+
   const x402FacilitatorClient =
     deps.x402FacilitatorClient ??
     new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" });
@@ -166,6 +181,7 @@ export function buildServer(deps: LifecycleServiceDeps): FastifyInstance {
 
   const x402Routes = {
     "POST /lifecycle/execute": {
+      resource: x402PublicResourceUrl,
       accepts: {
         scheme: "exact" as const,
         // 0.50 USDC. `price` is a decimal-dollar Money string, not raw base

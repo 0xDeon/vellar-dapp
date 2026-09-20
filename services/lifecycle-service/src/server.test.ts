@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { AccountReader, HorizonAccount } from "./horizon";
 import { buildCleanupPlan } from "./planner";
@@ -6,6 +6,22 @@ import { buildServer, fakeFacilitatorClient } from "./server";
 
 const G1 = "GCMCEGOUVALP2H6LTY7IPUUMSFKDQUMK3SDU5DI7LETNEZZKHRIIALKM";
 const G2 = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
+
+// buildServer() calls publicBaseUrlFromEnv() at construction time (see
+// docs/decisions.md — this fails-closed on purpose so a missing public URL
+// never falls back to publishing an internal bind address). Tests need a
+// real, valid value in the environment for that call to succeed.
+const PREVIOUS_RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
+beforeAll(() => {
+  process.env.RENDER_EXTERNAL_URL = "https://vellar-backend.onrender.com";
+});
+afterAll(() => {
+  if (PREVIOUS_RENDER_EXTERNAL_URL === undefined) {
+    delete process.env.RENDER_EXTERNAL_URL;
+  } else {
+    process.env.RENDER_EXTERNAL_URL = PREVIOUS_RENDER_EXTERNAL_URL;
+  }
+});
 
 function account(overrides: Partial<HorizonAccount> = {}): HorizonAccount {
   return {
@@ -283,5 +299,75 @@ describe("POST /lifecycle/merge", () => {
     const tx = TransactionBuilder.fromXDR(res.json().step.xdr, Networks.TESTNET);
     expect("operations" in tx && tx.operations[0]?.type).toBe("accountMerge");
     expect(res.json().step.description).toMatch(/cannot be undone/i);
+  });
+});
+
+describe("x402 public resource URL guard (docs/decisions.md — localhost catalog incident)", () => {
+  it("buildServer() refuses to start when no public base URL is configured", () => {
+    const previous = process.env.RENDER_EXTERNAL_URL;
+    delete process.env.RENDER_EXTERNAL_URL;
+    try {
+      const reader: AccountReader = { getAccount: vi.fn() };
+      expect(() =>
+        buildServer({ reader, x402FacilitatorClient: fakeFacilitatorClient() }),
+      ).toThrow(/No public base URL configured/);
+    } finally {
+      if (previous === undefined) delete process.env.RENDER_EXTERNAL_URL;
+      else process.env.RENDER_EXTERNAL_URL = previous;
+    }
+  });
+
+  it("buildServer() refuses to start when RENDER_EXTERNAL_URL is the exact localhost value from the incident", () => {
+    const previous = process.env.RENDER_EXTERNAL_URL;
+    // "http://localhost:4002" — verbatim what actually got published to the
+    // public Bazaar catalog. Rejected on the https check first (it's also
+    // not https), which is fine: the point is buildServer() refuses to boot
+    // with it either way. The loopback-specific message is covered directly
+    // against validatePublicResourceUrl() in x402-resource-url.test.ts.
+    process.env.RENDER_EXTERNAL_URL = "http://localhost:4002";
+    try {
+      const reader: AccountReader = { getAccount: vi.fn() };
+      expect(() =>
+        buildServer({ reader, x402FacilitatorClient: fakeFacilitatorClient() }),
+      ).toThrow(/localhost:4002/);
+    } finally {
+      if (previous === undefined) delete process.env.RENDER_EXTERNAL_URL;
+      else process.env.RENDER_EXTERNAL_URL = previous;
+    }
+  });
+
+  it("buildServer() refuses to start when RENDER_EXTERNAL_URL is https but still a loopback host", () => {
+    const previous = process.env.RENDER_EXTERNAL_URL;
+    process.env.RENDER_EXTERNAL_URL = "https://localhost:4002";
+    try {
+      const reader: AccountReader = { getAccount: vi.fn() };
+      expect(() =>
+        buildServer({ reader, x402FacilitatorClient: fakeFacilitatorClient() }),
+      ).toThrow(/loopback\/local/);
+    } finally {
+      if (previous === undefined) delete process.env.RENDER_EXTERNAL_URL;
+      else process.env.RENDER_EXTERNAL_URL = previous;
+    }
+  });
+
+  it("registers the real public URL (not localhost) when configured correctly", () => {
+    const app = build(account());
+    // Same shape @x402/fastify publishes: a 402 challenge without a payment
+    // header, whose resource.url must be the public base, not the bind host.
+    return app
+      .inject({
+        method: "POST",
+        url: "/lifecycle/execute",
+        payload: { accountId: G1, destination: G2 },
+      })
+      .then((res) => {
+        expect(res.statusCode).toBe(402);
+        const challengeB64 = res.headers["payment-required"] as string;
+        const challenge = JSON.parse(Buffer.from(challengeB64, "base64").toString("utf8"));
+        expect(challenge.resource.url).toBe(
+          "https://vellar-backend.onrender.com/lifecycle/execute",
+        );
+        expect(challenge.resource.url).not.toContain("localhost");
+      });
   });
 });
