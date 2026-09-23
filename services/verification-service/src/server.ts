@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import { registerHealth, registerMetrics } from "@vellar/service-kit";
+import { registerHealth, registerMetrics, publicBaseUrlFromEnv } from "@vellar/service-kit";
 import type { VerificationRecord } from "@vellar/types";
+import { paymentMiddleware, x402ResourceServer } from "@x402/fastify";
+import { ExactStellarScheme } from "@x402/stellar/exact/server";
+import { HTTPFacilitatorClient, type FacilitatorClient } from "@x402/core/server";
+import type { SupportedResponse } from "@x402/core/types";
+import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
+
 
 // Verification API (idea.md §11, technical-doc.md §5.5/§7.6): a developer submits
 // a contract's source (repo+commit or upload) and build metadata; the service
@@ -163,6 +169,65 @@ export interface VerificationServiceDeps {
    * with 429 (M7 queue-depth cap). This is the real anti-flood control on the
    * last unmetered unauthenticated write path. Default 1000. */
   maxActiveQueue?: number;
+  /** x402 facilitator client for the /verification/:contractId payment gate.
+   * Defaults to a real HTTPFacilitatorClient hitting vellar-facilitator.
+   * Tests inject `fakeFacilitatorClient()` instead: x402ResourceServer.initialize()
+   * (run on every buildServer() call) otherwise makes a real network call to the
+   * live facilitator per test, which is slow and flaky against a cold Render
+   * instance — see docs/decisions.md. */
+  x402FacilitatorClient?: FacilitatorClient;
+}
+
+/** getSupported() response captured from the live facilitator
+ * (curl https://vellar-facilitator.onrender.com/supported, 2026-09-18) for use
+ * by fakeFacilitatorClient() below. Re-capture if the facilitator's supported
+ * kinds/extensions change. */
+function capturedSupportedResponse(): SupportedResponse {
+  return {
+    kinds: [
+      { x402Version: 2, scheme: "exact", network: "stellar:pubnet", extra: { areFeesSponsored: true } },
+      {
+        x402Version: 2,
+        scheme: "upto",
+        network: "stellar:pubnet",
+        extra: {
+          uptoContract: "CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN",
+          areFeesSponsored: true,
+        },
+      },
+    ],
+    extensions: ["bazaar"],
+    signers: {
+      "stellar:*": [
+        "GDEZOW5M5ODU5SMPXC2XQFAHLRQKK7SSYXDZKMAF7ZKPCAX6KFBTFQZS",
+        "GDAP7ZVV7B6YSATUMPBQKZPTS4GODE5ZR3BTBTBDNNBXMPGSOA2TLVUS",
+        "GAJFQEVBZCKKFBCCFFUMRHB45CB442JO27LNZ7KIQQMK6GKM7G5R5SOL",
+        "GAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKAC",
+        "GCHPKEKCK7KPWNO2GYGFEGVP2WJQAAOYT6YGDBXHEVF4JCQJXMQTK6KT",
+        "GBB7PVDR642MJSALMD3PN4SAPZHUJP555XQMFJJNUH3AN33UQY7FVL3H",
+      ],
+    },
+  };
+}
+
+/** A FacilitatorClient that answers getSupported() from a locally-captured
+ * snapshot instead of a live network call, so x402ResourceServer.initialize()
+ * (invoked by paymentMiddleware on every buildServer() call) doesn't hit the
+ * real facilitator in tests. verify()/settle() reject: no test here exercises
+ * a real paid request, so a call reaching them signals a test that needs a
+ * different seam (e.g. a signed test payment), not this fake. */
+export function fakeFacilitatorClient(): FacilitatorClient {
+  return {
+    async getSupported() {
+      return capturedSupportedResponse();
+    },
+    async verify() {
+      throw new Error("fakeFacilitatorClient: verify() is not supported — inject a real client to test payment.");
+    },
+    async settle() {
+      throw new Error("fakeFacilitatorClient: settle() is not supported — inject a real client to test payment.");
+    },
+  };
 }
 
 export function buildServer(deps: VerificationServiceDeps = {}): FastifyInstance {
@@ -239,6 +304,79 @@ export function buildServer(deps: VerificationServiceDeps = {}): FastifyInstance
   });
 
   // GET /verification/:contractId — full verification history for a contract.
+  // --- Vellar x402: payment gate for GET /verification/:contractId ---
+  // payTo is read from the "vellar-x402.payToAddress" VS Code setting at runtime.
+  const PAYMENT_CONFIG = {
+    payToAddress: "GBBA3HN2PNOAJGR6R5VY34SQFDFTZFQIGDPYATJB34UXXFUHVR4KZRAZ",
+  };
+
+  // @x402/fastify derives the published resource.url from the INBOUND
+  // request's Host header when no explicit `resource` is given — behind
+  // api-gateway's proxy (which doesn't rewrite Host) that's this service's
+  // own internal bind address, not a public one. This exact defect published
+  // "localhost:4002" for /lifecycle/execute to the public mainnet Bazaar
+  // catalog before it was caught (see docs/decisions.md); this route uses
+  // the identical mechanism and would repeat it the moment it's registered.
+  // publicBaseUrlFromEnv() throws and refuses to boot rather than silently
+  // publishing an unreachable URL.
+  const x402PublicResourceUrl = `${publicBaseUrlFromEnv()}/verification/:contractId`;
+
+  const x402FacilitatorClient =
+    deps.x402FacilitatorClient ??
+    new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" });
+  const x402Server = new x402ResourceServer(x402FacilitatorClient)
+    .register("stellar:pubnet", new ExactStellarScheme())
+    .registerExtension(bazaarResourceServerExtension);
+
+  const x402Routes = {
+    "GET /verification/:contractId": {
+      resource: x402PublicResourceUrl,
+      accepts: {
+        scheme: "exact" as const,
+        price: "$0.05",
+        network: "stellar:pubnet" as const,
+        payTo: PAYMENT_CONFIG.payToAddress,
+        maxTimeoutSeconds: 300,
+      },
+      description:
+        "Returns the full contract-verification history (reproducible-build source-verification records) for a Soroban contract.",
+      serviceName: "@vellar/verification-service",
+      tags: ["api", "x402", "stellar", "contract-verification"],
+      extensions: declareDiscoveryExtension({
+        pathParams: {
+          contractId: "CAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKACAAAA",
+        },
+        pathParamsSchema: {
+          properties: {
+            contractId: {
+              type: "string",
+              description: "Soroban contract address (C...) to look up verification history for",
+            },
+          },
+        },
+        output: {
+          example: {
+            contractId: "CAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKACAAAA",
+            records: [
+              {
+                id: "rec_01HXYZ",
+                status: "verified",
+                sourceType: "repo",
+                repoUrl: "https://github.com/org/contract",
+                commitHash: "a1b2c3d",
+                toolchainVersion: "1.81.0",
+                statusDetail: "Build reproduced; WASM hash matches on-chain contract.",
+                createdAt: "2026-09-01T12:00:00.000Z",
+                updatedAt: "2026-09-01T12:03:00.000Z",
+              },
+            ],
+          },
+        },
+      }),
+    },
+  };
+  // --- end Vellar x402 setup ---
+  paymentMiddleware(app, x402Routes, x402Server); // Vellar x402: gate the route below
   app.get("/verification/:contractId", async (request, reply) => {
     const parsed = contractIdSchema.safeParse(
       (request.params as { contractId: string }).contractId,
@@ -275,7 +413,10 @@ export function buildServer(deps: VerificationServiceDeps = {}): FastifyInstance
 
 /** Strip internal-only fields (archive ref, lockfile hash) from API responses —
  * the public record is the @vellar/types shape plus the build log. */
-function toPublic(
+// Exported so the redaction guarantee (H3/FIX 6) can be unit-tested directly:
+// the /verification/:contractId route is x402-gated, so an unauthenticated
+// test request can no longer reach this function through the HTTP layer.
+export function toPublic(
   record: VerificationRecordInternal,
 ): VerificationRecord & { statusDetail?: string } {
   // Strip the internal fields AND the private `log` (H3/FIX 6): only the

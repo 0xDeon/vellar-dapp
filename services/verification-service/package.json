@@ -21,8 +21,12 @@
     "@stellar/stellar-sdk": "^16.0.0",
     "@vellar/service-kit": "workspace:*",
     "@vellar/types": "workspace:*",
+    "@x402/core": "^2.26.0",
+    "@x402/extensions": "^2.26.0",
+    "@x402/fastify": "^2.26.0",
+    "@x402/stellar": "^2.26.0",
     "drizzle-orm": "^0.45.2",
-    "fastify": "^5.4.0",
+    "fastify": "^5.12.3",
     "pg": "^8.22.0",
     "zod": "^4.0.0"
   },

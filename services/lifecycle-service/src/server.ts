@@ -1,21 +1,25 @@
-import Fastify, { type FastifyBaseLogger, type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
-  logEvent,
   registerHealth,
   registerMetrics,
   domainMetrics,
   recordOutcome,
+  publicBaseUrlFromEnv,
 } from "@vellar/service-kit";
 import { buildCleanupSteps, buildMergeStep } from "./builder";
 import type { AccountReader } from "./horizon";
-import type { CachedAccountReader } from "./account-cache";
 import { buildCleanupPlan, isClassicAccountId } from "./planner";
-import type { CleanupJobStore } from "./db/job-store";
+import { paymentMiddleware, x402ResourceServer } from "@x402/fastify";
+import { ExactStellarScheme } from "@x402/stellar/exact/server";
+import { HTTPFacilitatorClient, type FacilitatorClient } from "@x402/core/server";
+import type { SupportedResponse } from "@x402/core/types";
+import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
 
-// Lifecycle API (idea.md §11): inspect + plan + async execute/merge (Issue #293).
-// Execute/merge endpoints now enqueue jobs to a persistent queue, ensuring
-// per-account FIFO ordering and reliable processing across worker instances.
+
+// Lifecycle API (idea.md §11): inspect + plan. Execute/merge land with the
+// signing-flow decision (see BUILD-PLAN — docs are ambiguous on who signs
+// classic-account cleanup transactions in a passkey wallet).
 
 const inspectBodySchema = z.object({
   accountId: z.string().min(1),
@@ -28,23 +32,65 @@ const planBodySchema = z.object({
 
 export interface LifecycleServiceDeps {
   reader: AccountReader;
-  auditLog: AuditLog;
   networkPassphrase?: string;
-  /** Injectable logger (tests). Defaults to the request-scoped logger so
-   * cleanup events stay correlated with the request that produced them. */
-  logger?: Pick<FastifyBaseLogger, "info">;
+  /** x402 facilitator client for the /lifecycle/execute payment gate. Defaults
+   * to a real HTTPFacilitatorClient hitting vellar-facilitator. Tests inject
+   * `fakeFacilitatorClient()` instead: x402ResourceServer.initialize() (run on
+   * every buildServer() call) otherwise makes a real network call to the live
+   * facilitator per test, which is slow and flaky against a cold Render
+   * instance — see docs/decisions.md. */
+  x402FacilitatorClient?: FacilitatorClient;
+}
+
+function capturedSupportedResponse(): SupportedResponse {
+  return {
+    kinds: [
+      { x402Version: 2, scheme: "exact", network: "stellar:pubnet", extra: { areFeesSponsored: true } },
+      {
+        x402Version: 2,
+        scheme: "upto",
+        network: "stellar:pubnet",
+        extra: {
+          uptoContract: "CCZL7CTRS6GWEYXDYD54DZM3OUHQW2S2A4KSU75SH275P3SFZLL4YQAN",
+          areFeesSponsored: true,
+        },
+      },
+    ],
+    extensions: ["bazaar"],
+    signers: {
+      "stellar:*": [
+        "GDEZOW5M5ODU5SMPXC2XQFAHLRQKK7SSYXDZKMAF7ZKPCAX6KFBTFQZS",
+        "GDAP7ZVV7B6YSATUMPBQKZPTS4GODE5ZR3BTBTBDNNBXMPGSOA2TLVUS",
+        "GAJFQEVBZCKKFBCCFFUMRHB45CB442JO27LNZ7KIQQMK6GKM7G5R5SOL",
+        "GAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKAC",
+        "GCHPKEKCK7KPWNO2GYGFEGVP2WJQAAOYT6YGDBXHEVF4JCQJXMQTK6KT",
+        "GBB7PVDR642MJSALMD3PN4SAPZHUJP555XQMFJJNUH3AN33UQY7FVL3H",
+      ],
+    },
+  };
+}
+
+/** A FacilitatorClient that answers getSupported() from a locally-captured
+ * snapshot instead of a live network call, so x402ResourceServer.initialize()
+ * (invoked by paymentMiddleware on every buildServer() call) doesn't hit the
+ * real facilitator in tests. verify()/settle() reject: no test here exercises
+ * a real paid request, so a call reaching them signals a test that needs a
+ * different seam (e.g. a signed test payment), not this fake. */
+export function fakeFacilitatorClient(): FacilitatorClient {
+  return {
+    async getSupported() {
+      return capturedSupportedResponse();
+    },
+    async verify() {
+      throw new Error("fakeFacilitatorClient: verify() is not supported — inject a real client to test payment.");
+    },
+    async settle() {
+      throw new Error("fakeFacilitatorClient: settle() is not supported — inject a real client to test payment.");
+    },
+  };
 }
 
 const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
-
-/** `deps.reader` is a plain `AccountReader` in most tests and an
- * uncached direct Horizon reader when caching is disabled — only
- * narrow to the cache-invalidating shape when it's actually present,
- * so a caller that never opted into caching gets no invalidation
- * call at all (correct — there's nothing to invalidate). */
-function isCachedAccountReader(reader: AccountReader): reader is CachedAccountReader {
-  return typeof (reader as Partial<CachedAccountReader>).invalidate === "function";
-}
 
 function validatePair(accountId: string, destination: string): string | undefined {
   if (!isClassicAccountId(accountId)) return "not_classic_account";
@@ -65,9 +111,6 @@ export function buildServer(deps: LifecycleServiceDeps): FastifyInstance {
     }
     const { accountId } = parsed.data;
     if (!isClassicAccountId(accountId)) {
-      await deps.auditLog.record("lifecycle.inspect_rejected", {
-        reason: "not_classic_account",
-      });
       return reply.code(400).send({
         error: "not_classic_account",
         message: "Cleanup applies to classic (G...) accounts; smart wallets cannot be merged",
@@ -75,16 +118,7 @@ export function buildServer(deps: LifecycleServiceDeps): FastifyInstance {
     }
 
     const account = await deps.reader.getAccount(accountId);
-    if (!account) {
-      await deps.auditLog.record("lifecycle.inspect_failed", {
-        reason: "account_not_found",
-      });
-      return reply.code(404).send({ error: "account_not_found" });
-    }
-
-    await deps.auditLog.record("lifecycle.account_inspected", {
-      account,
-    });
+    if (!account) return reply.code(404).send({ error: "account_not_found" });
     return reply.send({ account });
   });
 
@@ -95,27 +129,18 @@ export function buildServer(deps: LifecycleServiceDeps): FastifyInstance {
     }
     const { accountId, destination } = parsed.data;
     if (!isClassicAccountId(accountId)) {
-      await deps.auditLog.record("lifecycle.plan_rejected", {
-        reason: "not_classic_account",
-      });
       return reply.code(400).send({
         error: "not_classic_account",
         message: "Cleanup applies to classic (G...) accounts; smart wallets cannot be merged",
       });
     }
     if (!isClassicAccountId(destination)) {
-      await deps.auditLog.record("lifecycle.plan_rejected", {
-        reason: "invalid_destination",
-      });
       return reply.code(400).send({
         error: "invalid_destination",
         message: "Merge destination must be a classic (G...) account",
       });
     }
     if (destination === accountId) {
-      await deps.auditLog.record("lifecycle.plan_rejected", {
-        reason: "invalid_destination",
-      });
       return reply.code(400).send({
         error: "invalid_destination",
         message: "Destination must differ from the account being closed",
@@ -123,23 +148,95 @@ export function buildServer(deps: LifecycleServiceDeps): FastifyInstance {
     }
 
     const account = await deps.reader.getAccount(accountId);
-    if (!account) {
-      await deps.auditLog.record("lifecycle.plan_failed", {
-        reason: "account_not_found",
-      });
-      return reply.code(404).send({ error: "account_not_found" });
-    }
-
-    const plan = buildCleanupPlan(account, destination);
-    await deps.auditLog.record("lifecycle.cleanup_planned", { plan });
-    return reply.send({ plan });
+    if (!account) return reply.code(404).send({ error: "account_not_found" });
+    return reply.send({ plan: buildCleanupPlan(account, destination) });
   });
 
   const passphrase = deps.networkPassphrase ?? TESTNET_PASSPHRASE;
 
-  // POST /lifecycle/execute — Enqueue or build cleanup operations.
-  // If a job store is configured (Issue #293), enqueues the job for async processing
-  // and returns a job ID. Otherwise, builds and returns unsigned XDR immediately.
+  // Builds UNSIGNED cleanup transactions (decisions.md option A): the user
+  // signs them in the wallet that holds the old account's key.
+  // --- Vellar x402: payment gate for POST /lifecycle/execute ---
+  const PAYMENT_CONFIG = {
+    payToAddress: "GD6TC7QY35TZ5VHPMGCPQUDHRBLXZEI3HCBLHTBBAY2RX3L6PBWI5C2O",
+    // USDC mainnet SAC (matches @x402/stellar's DEFAULT_ASSETS for stellar:pubnet).
+    asset: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+  };
+
+  // @x402/fastify derives the published resource.url from the INBOUND
+  // request's Host header when no explicit `resource` is given — behind
+  // api-gateway's proxy (which doesn't rewrite Host) that's the service's
+  // own internal bind address, not a public one. Registered "localhost:4002"
+  // to the public mainnet Bazaar catalog before this was caught (see
+  // docs/decisions.md). publicBaseUrlFromEnv() throws and refuses to boot
+  // rather than silently publishing an unreachable URL.
+  const x402PublicResourceUrl = `${publicBaseUrlFromEnv()}/lifecycle/execute`;
+
+  const x402FacilitatorClient =
+    deps.x402FacilitatorClient ??
+    new HTTPFacilitatorClient({ url: "https://vellar-facilitator.onrender.com" });
+  const x402Server = new x402ResourceServer(x402FacilitatorClient)
+    .register("stellar:pubnet", new ExactStellarScheme())
+    .registerExtension(bazaarResourceServerExtension);
+
+  const x402Routes = {
+    "POST /lifecycle/execute": {
+      resource: x402PublicResourceUrl,
+      accepts: {
+        scheme: "exact" as const,
+        // 0.50 USDC. `price` is a decimal-dollar Money string, not raw base
+        // units — @x402/stellar's defaultMoneyConversion multiplies this by
+        // the asset's decimals (7 for USDC) to get the on-chain amount.
+        price: "$0.50",
+        network: "stellar:pubnet" as const,
+        payTo: PAYMENT_CONFIG.payToAddress,
+        maxTimeoutSeconds: 300,
+      },
+      description: "Build unsigned Stellar transaction steps for account cleanup and migration",
+      serviceName: "@vellar/lifecycle-service",
+      tags: ["api", "x402", "stellar", "account-cleanup"],
+      extensions: declareDiscoveryExtension({
+        bodyType: "json",
+        input: {
+          accountId: "GAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKAC",
+          destination: "GBB7PVDR642MJSALMD3PN4SAPZHUJP555XQMFJJNUH3AN33UQY7FVL3H",
+        },
+        inputSchema: {
+          properties: {
+            accountId: {
+              type: "string",
+              description: "Classic (G...) Stellar account to close and merge",
+            },
+            destination: {
+              type: "string",
+              description: "Classic (G...) Stellar account to receive the merged balance",
+            },
+          },
+        },
+        output: {
+          example: {
+            steps: [
+              {
+                title: "Clean up the account",
+                description: "One transaction that will: merge account into destination.",
+                xdr: "AAAAAgAAAAA...",
+                hash: "3f9c2e...",
+              },
+            ],
+            plan: {
+              accountId: "GAQDNEHYHTNCGJN5HBS7L7NVIV7LM6HIKXNFDAM7ZLLJFNLAT4QVJKAC",
+              destination: "GBB7PVDR642MJSALMD3PN4SAPZHUJP555XQMFJJNUH3AN33UQY7FVL3H",
+              blockers: [],
+              estimatedTransactions: 1,
+              mergeReady: true,
+            },
+          },
+        },
+      }),
+    },
+  };
+  // --- end Vellar x402 setup ---
+  paymentMiddleware(app, x402Routes, x402Server); // Vellar x402: gate the route below
   app.post("/lifecycle/execute", async (request, reply) => {
     const parsed = planBodySchema.safeParse(request.body);
     if (!parsed.success) {
@@ -147,65 +244,15 @@ export function buildServer(deps: LifecycleServiceDeps): FastifyInstance {
     }
     const { accountId, destination } = parsed.data;
     const invalid = validatePair(accountId, destination);
-    if (invalid) {
-      await deps.auditLog.record("lifecycle.execute_rejected", { reason: invalid });
-      return reply.code(400).send({ error: invalid });
-    }
+    if (invalid) return reply.code(400).send({ error: invalid });
 
-    // If job store is configured, enqueue the job for async processing
-    if (deps.store) {
-      try {
-        const { jobId, sequenceNumber } = await deps.store.enqueueJob(accountId, destination);
-        return reply.code(202).send({
-          jobId,
-          sequenceNumber,
-          status: "queued",
-          message: "Cleanup job queued for processing. Poll GET /lifecycle/jobs/:jobId for status.",
-        });
-      } catch (err) {
-        return reply.code(500).send({
-          error: "enqueue_failed",
-          message: err instanceof Error ? err.message : "Failed to enqueue job",
-        });
-      }
-    }
-
-    // Fallback: synchronous mode (no job store configured)
     const account = await deps.reader.getAccount(accountId);
-    if (!account) {
-      await deps.auditLog.record("lifecycle.execute_failed", {
-        reason: "account_not_found",
-      });
-      return reply.code(404).send({ error: "account_not_found" });
-    }
+    if (!account) return reply.code(404).send({ error: "account_not_found" });
 
-    const steps = buildCleanupSteps(account, destination, passphrase);
-    const plan = buildCleanupPlan(account, destination);
-
-    // Structured audit trail (issue #304): one entry per step built, so
-    // operators can see exactly what a cleanup plan execution produced.
-    const log = deps.logger ?? request.log;
-    if (steps.length === 0) {
-      logEvent(log, "cleanup.plan.executed", {
-        accountId,
-        destination,
-        outcome: "no_steps",
-      });
-    } else {
-      steps.forEach((step, index) => {
-        logEvent(log, "cleanup.step.built", {
-          accountId,
-          destination,
-          outcome: "built",
-          stepIndex: index + 1,
-          stepCount: steps.length,
-          title: step.title,
-          hash: step.hash,
-        });
-      });
-    }
-
-    return reply.send({ steps, plan });
+    return reply.send({
+      steps: buildCleanupSteps(account, destination, passphrase),
+      plan: buildCleanupPlan(account, destination),
+    });
   });
 
   // MergePreflightValidator (idea.md §6.4): re-inspects and refuses to build
@@ -217,59 +264,20 @@ export function buildServer(deps: LifecycleServiceDeps): FastifyInstance {
     }
     const { accountId, destination } = parsed.data;
     const invalid = validatePair(accountId, destination);
-    if (invalid) {
-      await deps.auditLog.record("lifecycle.merge_rejected", { reason: invalid });
-      return reply.code(400).send({ error: invalid });
-    }
+    if (invalid) return reply.code(400).send({ error: invalid });
 
     const account = await deps.reader.getAccount(accountId);
-    if (!account) {
-      await deps.auditLog.record("lifecycle.merge_failed", {
-        reason: "account_not_found",
-      });
-      return reply.code(404).send({ error: "account_not_found" });
-    }
+    if (!account) return reply.code(404).send({ error: "account_not_found" });
 
     const plan = buildCleanupPlan(account, destination);
     if (!plan.mergeReady) {
       // §13 alerting: abnormal cleanup failure rates. A merge refused because
       // the account still has blockers is a "not ready" outcome, not success.
-      await deps.auditLog.record("lifecycle.merge_rejected", {
-        reason: "not_merge_ready",
-        blockerCount: plan.blockers.length,
-      });
       recordOutcome(domainMetrics.cleanupCompleted, "lifecycle-service", "failure");
       return reply.code(409).send({ error: "not_merge_ready", plan });
     }
-
-    const step = buildMergeStep(account, destination, passphrase);
-
-    // Cache invalidation (#287): this endpoint builds the unsigned merge
-    // operation — the client still has to sign and submit it (via
-    // wallet-service) before the merge is actually final on-chain. This
-    // service has no way to observe that later confirmation, so this is
-    // deliberately OPTIMISTIC invalidation at the point the merge is
-    // committed to (logged to the audit trail), not proof the merge has
-    // happened. It's still correct to do: a merge this far along succeeds
-    // in the overwhelming common case, and evicting now means the very next
-    // /lifecycle/inspect or /lifecycle/plan call for either account
-    // re-reads Horizon instead of serving a cache entry that's about to be
-    // wrong — rather than waiting out the full TTL regardless. The TTL
-    // itself (see account-cache.ts) is the backstop for the rare case this
-    // specific merge never actually lands on-chain (invalidated early, but
-    // still re-fetches the correct still-unmerged state next time).
-    if (isCachedAccountReader(deps.reader)) {
-      deps.reader.invalidate(accountId); // merged away — should read as not-found
-      deps.reader.invalidate(destination); // balance changed
-      logEvent(deps.logger ?? request.log, "lifecycle.merge.cache_invalidated", {
-        accountId,
-        destination,
-      });
-    }
-
-    await deps.auditLog.record("lifecycle.account_merged", { step });
     recordOutcome(domainMetrics.cleanupCompleted, "lifecycle-service", "success");
-    return reply.send({ step });
+    return reply.send({ step: buildMergeStep(account, destination, passphrase) });
   });
 
   return app;

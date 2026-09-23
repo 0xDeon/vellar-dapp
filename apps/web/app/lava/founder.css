@@ -1,0 +1,117 @@
+/* Founder slide: photo left, copy right.
+   Scoped to the LAVA deck so the Oakvale team slide keeps its own layout. */
+
+.deck-founder {
+  display: grid;
+  grid-template-columns: minmax(260px, 34%) 1fr;
+  gap: var(--lp-sp-8);
+  align-items: start;
+  margin-top: var(--lp-sp-6);
+}
+
+.deck-founder-photo {
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  object-fit: cover;
+  object-position: top center;
+  clip-path: var(--lp-clip-br-md);
+}
+
+.deck-founder-copy {
+  min-width: 0;
+}
+
+/* The name block leads the column, so it loses the top margin a body
+   paragraph would otherwise inherit. */
+.deck-founder-copy .deck-team-name {
+  margin-top: 0;
+}
+
+.deck-founder-copy .deck-body {
+  max-width: 58ch;
+}
+
+@media (max-width: 900px) {
+  .deck-founder {
+    grid-template-columns: 1fr;
+    gap: var(--lp-sp-5);
+  }
+  .deck-founder-photo {
+    width: 220px;
+    aspect-ratio: 1 / 1;
+  }
+}
+
+/* Contact chips on the close slide are real links. They keep the chip look of
+   their sibling spans and pick up an underline on hover, so they read as
+   clickable without breaking the row's rhythm. Links survive into the PDF
+   export as clickable annotations. */
+
+.deck-chips--links a {
+  font-family: var(--lp-mono);
+  font-size: 0.8125rem;
+  letter-spacing: 0.02em;
+  color: var(--lp-forest);
+  background: var(--lp-lime-soft);
+  padding: 0.4em 0.8em;
+  clip-path: var(--lp-clip-br-sm);
+  text-decoration: none;
+  transition:
+    background 0.18s ease,
+    transform 0.18s ease;
+}
+
+.deck-chips--links a:hover {
+  background: var(--lp-lime);
+  transform: translateY(-1px);
+}
+
+.deck-chips--links a:focus-visible {
+  outline: 2px solid var(--lp-forest);
+  outline-offset: 2px;
+}
+
+/* ---- Use-of-funds: five milestones on one slide ----
+
+   The shared .deck-milestones grid is 2-up with a 190px min-height, sized for
+   Oakvale's four. Five items make three rows, which overflows the 900px slide
+   and pushes the heading off the top of the printed page. Three across, two
+   rows, with the shorter cards the copy allows. Scoped to this deck so the
+   Oakvale roadmap keeps its own proportions. */
+
+.deck-slide .deck-milestones--five {
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--lp-sp-4);
+  margin-top: var(--lp-sp-6);
+}
+
+.deck-slide .deck-milestones--five .deck-milestone {
+  min-height: 0;
+  /* The shared rule's padding is applied to the ink backdrop; the tinted fill
+     is inset 2px inside it, so the copy needs its own breathing room here. */
+  padding: 1.35rem 1.4rem 1.1rem;
+  gap: 0.4rem;
+}
+
+.deck-slide .deck-milestones--five .deck-milestone h4 {
+  font-size: 1.0625rem;
+}
+
+.deck-slide .deck-milestones--five .deck-milestone p {
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* The oversized step numeral is decorative; at this density it crowds the
+   copy, so it sits smaller. It is flex-positioned (align-self/margin-top),
+   not absolute, so only the size needs changing. */
+.deck-slide .deck-milestones--five .deck-milestone-num {
+  font-size: 1.75rem;
+  margin-top: 0.35rem;
+}
+
+@media (max-width: 1100px) {
+  .deck-slide .deck-milestones--five {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
