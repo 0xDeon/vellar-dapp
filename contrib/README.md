@@ -2,7 +2,7 @@
 
 This folder is the **only place** external contributor PRs may touch.
 
-A PR against the `drips` branch that changes any file outside `contrib/` is
+A PR against the `dev` branch that changes any file outside `contrib/` is
 closed automatically — see `.github/workflows/close-prs-outside-contrib.yml`
 and [CONTRIBUTING.md](../CONTRIBUTING.md) for the full contribution rules.
 
