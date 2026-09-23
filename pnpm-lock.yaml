@@ -42,6 +42,9 @@ importers:
       '@stellar/stellar-sdk':
         specifier: ^16.0.1
         version: 16.0.1
+      '@vellar/permission-service':
+        specifier: workspace:*
+        version: link:../../services/permission-service
       '@vellar/provider-sdk':
         specifier: workspace:*
         version: link:../../packages/provider-sdk
@@ -308,7 +311,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.0
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(tsx@4.23.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.33.0)(tsx@4.23.1)
 
   services/all-in-one:
     dependencies:
@@ -407,13 +410,35 @@ importers:
         version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.33.0)(tsx@4.23.1)
 
   services/permission-service:
+    dependencies:
+      '@vellar/service-kit':
+        specifier: workspace:*
+        version: link:../../packages/service-kit
+      '@vellar/types':
+        specifier: workspace:*
+        version: link:../../packages/types
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(pg@8.22.0)
+      fastify:
+        specifier: ^5.4.0
+        version: 5.12.3
+      pg:
+        specifier: ^8.22.0
+        version: 8.22.0
     devDependencies:
+      '@types/pg':
+        specifier: ^8.20.0
+        version: 8.20.0
+      tsx:
+        specifier: ^4.20.0
+        version: 4.23.1
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
       vitest:
         specifier: ^3.2.0
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(tsx@4.23.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.33.0)(tsx@4.23.1)
 
   services/policy-service:
     dependencies:
@@ -573,6 +598,9 @@ importers:
       pg:
         specifier: ^8.22.0
         version: 8.22.0
+      zod:
+        specifier: ^4.0.0
+        version: 4.4.3
     devDependencies:
       '@types/pg':
         specifier: ^8.20.0
