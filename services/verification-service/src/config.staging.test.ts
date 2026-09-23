@@ -1,6 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { configFromEnv } from "./config";
 import { buildServer, createMemoryVerificationRepository, type BuildJobQueue } from "./server";
+
+// buildServer() registers the x402 payment gate, which resolves its public
+// resource URL from the environment and refuses to fall back to the local
+// bind host/port. Tests must supply a valid value for that call to succeed.
+const PREVIOUS_RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
+beforeAll(() => {
+  process.env.RENDER_EXTERNAL_URL = "https://vellar-backend.onrender.com";
+});
+afterAll(() => {
+  if (PREVIOUS_RENDER_EXTERNAL_URL === undefined) {
+    delete process.env.RENDER_EXTERNAL_URL;
+  } else {
+    process.env.RENDER_EXTERNAL_URL = PREVIOUS_RENDER_EXTERNAL_URL;
+  }
+});
 
 /**
  * Regression coverage for #338: verification-service needs a dedicated

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, beforeAll, afterAll } from "vitest";
 import type { FastifyInstance } from "fastify";
 import {
   buildServer,
@@ -10,6 +10,21 @@ import { stubBuildExecutor } from "./executor";
 import { createStaticArtifactResolver } from "./resolver";
 import { runWorkerTick } from "./loop";
 import type { VerificationJobStore } from "./job-store";
+
+// buildServer() registers the x402 payment gate, which resolves its public
+// resource URL from the environment and refuses to fall back to the local
+// bind host/port. Tests must supply a valid value for that call to succeed.
+const PREVIOUS_RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
+beforeAll(() => {
+  process.env.RENDER_EXTERNAL_URL = "https://vellar-backend.onrender.com";
+});
+afterAll(() => {
+  if (PREVIOUS_RENDER_EXTERNAL_URL === undefined) {
+    delete process.env.RENDER_EXTERNAL_URL;
+  } else {
+    process.env.RENDER_EXTERNAL_URL = PREVIOUS_RENDER_EXTERNAL_URL;
+  }
+});
 
 // e2e: verify contract source (idea.md §15). Exercises the full pipeline end to
 // end against the REAL verification-service Fastify server and the REAL worker
