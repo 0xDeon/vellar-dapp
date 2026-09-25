@@ -126,3 +126,41 @@ to …"); the user approves; the device key signs.
 
 **Revocation:** remove the device signer on-chain from the web app's Settings —
 a remote kill. The pairing also auto-expires after 7 days.
+
+## 7. Manage signers, add a second passkey (Settings)
+
+Settings lists every signer the account has **on-chain** — human passkeys,
+extension device sessions, agent keys and attached policies — enumerated
+through passkey-kit's signer indexer and confirmed with a ledger read per
+entry, so a change made on another device shows up on refresh.
+
+- **Add a second passkey** (recovery): the browser registers a new credential,
+  then the passkey you are signed in with approves the account's `add_signer`.
+  Nothing changes on-chain until that transaction is confirmed. The new
+  passkey is a durable, unlimited admin peer.
+- **Revoke** any signer: kind-specific confirmation → passkey approval →
+  on-chain `remove_signer` → refresh from chain. Revoking the only passkey is
+  refused before any prompt, and the account contract itself refuses to remove
+  its last durable admin signer (`LastAdminSigner`).
+- **Detach a policy**: the same action on a policy row — the account removes a
+  policy signer without the policy's consent, which is the recovery path if a
+  policy is blocking transactions you need (or its registry is unavailable).
+
+## 8. Mint an agent session key (Settings, testnet only)
+
+Pick the token, the per-window budget and the key's expiry. The app deploys a
+token-scoped spending-limit policy bound to your account and that token, you
+approve attaching it with your passkey, then you approve adding the agent's
+ed25519 key with the policy as a required co-signer. The generated secret is
+shown **once**; dismiss it and it is gone. Revoke the key from the signer list
+at any time (remote kill). The budget is enforced by the policy contract on
+every spend — the app computes nothing.
+
+## 9. Verified provenance signing (Settings)
+
+Choose **off**, **warn** (a provenance warning before you sign, wallet-side),
+**strict** or **trusted publishers only** (a verified-provenance policy deployed
+for your account and attached on-chain; it binds every agent key minted while
+attached and any authorization that includes it). Verified means reproducible,
+attributable source provenance — not audited or safe. Detaching the policy from
+the signer list is the recovery path.
