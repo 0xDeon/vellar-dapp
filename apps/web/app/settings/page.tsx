@@ -13,6 +13,7 @@ import {
 import { walletErrorMessage } from "@/lib/messages";
 import { useRevokeSession, useSessions } from "@/lib/sessions";
 import { useWalletActions, useWalletSession } from "@/lib/wallet-context";
+import { useAgentKeys, useRevokeAgentKey } from "@/lib/agent-keys";
 
 // Account settings ("paper & signals" shell): session/device management +
 // extension pairing.
@@ -34,11 +35,18 @@ export default function Settings() {
     session?.serverSessionId,
   );
 
+  const agentKeys = useAgentKeys(session?.accountId, session?.network);
+  const revokeKey = useRevokeAgentKey(session?.accountId, session?.network);
+
   async function revokeSession(id: string) {
     await revoke.mutateAsync(id);
     if (id === session?.serverSessionId) {
       await actions.disconnect();
     }
+  }
+
+  async function revokeAgent(publicKey: string, policyContractId?: string) {
+    await revokeKey.mutateAsync({ publicKey, policyContractId });
   }
 
   return (
@@ -101,6 +109,98 @@ export default function Settings() {
                     >
                       {isCurrent ? "Revoke & sign out" : "Revoke"}
                     </LpActionButton>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        <section className="lpa-panel">
+          <Eyebrow>Agent session keys</Eyebrow>
+          <p className="mt-2! text-xs text-[var(--lp-ink-faint)]">
+            Autonomous agent keys authorized to pay under on-chain budgets (§17.3). Revocation removes the key on-chain as a remote kill switch.
+          </p>
+
+          {agentKeys.isPending && (
+            <p className="mt-3.5! animate-pulse text-sm text-[var(--lp-ink-faint)]">
+              Loading agent keys…
+            </p>
+          )}
+
+          {agentKeys.isError && (
+            <div className="mt-3.5 flex items-center gap-3">
+              <p role="alert" className="lpa-bad text-sm">
+                Couldn&apos;t load agent keys.
+              </p>
+              <LpActionButton variant="outline" size="sm" onClick={() => void agentKeys.refetch()}>
+                Retry
+              </LpActionButton>
+            </div>
+          )}
+
+          {agentKeys.data && (
+            <ul className="mt-3.5 flex list-none flex-col gap-2.5 p-0">
+              {agentKeys.data.length === 0 && (
+                <li className="text-sm text-[var(--lp-ink-faint)]">No agent keys authorized yet.</li>
+              )}
+              {agentKeys.data.map((key) => {
+                const isActive = key.status === "active";
+                const isExpired = key.status === "expired";
+
+                return (
+                  <li key={key.publicKey} className="lpa-well flex flex-col gap-2 p-3 text-sm">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <b className="text-[var(--lp-ink)]">{key.label ?? "Autonomous Agent"}</b>
+                        <span className="ml-2 font-[family-name:var(--lp-mono)] text-xs text-[var(--lp-ink-faint)]">
+                          {key.publicKey.slice(0, 6)}…{key.publicKey.slice(-6)}
+                        </span>
+                      </div>
+                      <span
+                        className={`rounded px-2 py-0.5 text-[11px] font-bold uppercase ${
+                          isActive
+                            ? "bg-[var(--lp-mint-soft)] text-[var(--lp-mint-dark)]"
+                            : isExpired
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-red-100 text-red-700"
+                        }`}
+                      >
+                        {key.status}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-xs text-[var(--lp-ink-soft)] sm:grid-cols-4">
+                      <div>
+                        <span className="block text-[var(--lp-ink-faint)]">Token:</span>
+                        <span>{key.boundToken}</span>
+                      </div>
+                      <div>
+                        <span className="block text-[var(--lp-ink-faint)]">Budget:</span>
+                        <span>{key.budget}</span>
+                      </div>
+                      <div>
+                        <span className="block text-[var(--lp-ink-faint)]">Window:</span>
+                        <span>{key.window}</span>
+                      </div>
+                      <div>
+                        <span className="block text-[var(--lp-ink-faint)]">Expires:</span>
+                        <span>{key.expiresAt ? new Date(key.expiresAt).toLocaleDateString() : "Never"}</span>
+                      </div>
+                    </div>
+
+                    {isActive && (
+                      <div className="mt-1 flex justify-end">
+                        <LpActionButton
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void revokeAgent(key.publicKey, key.policyContractId)}
+                          disabled={revokeKey.isPending}
+                        >
+                          {revokeKey.isPending ? "Revoking…" : "Revoke (kill switch)"}
+                        </LpActionButton>
+                      </div>
+                    )}
                   </li>
                 );
               })}
