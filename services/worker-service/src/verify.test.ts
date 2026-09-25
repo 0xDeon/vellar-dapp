@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { runVerification, type VerificationJobInput, type RunVerificationDeps } from "./verify";
 import { ArtifactResolveError } from "./resolver";
-import { BuildExecutorError } from "./executor";
+import { BuildExecutorError, stubBuildExecutor } from "./executor";
 
 describe("Verification with Retry Backoff (Issue #295)", () => {
   // SUITE 1: Transient failure retry behavior
@@ -548,6 +548,12 @@ describe("Verification with Retry Backoff (Issue #295)", () => {
     });
   });
 
+  const repoJob: VerificationJobInput = {
+    contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+    sourceType: "repo",
+    toolchainVersion: "21.0",
+  };
+
   // Issue #330 — a resolver timeout must NOT produce a terminal "failed"
   // verdict for a contract that may well be perfectly valid; it should be
   // retried, the same fallback path an unexpected error already gets.
@@ -583,5 +589,61 @@ describe("Verification with Retry Backoff (Issue #295)", () => {
       expect(outcome.status).toBe("failed");
       expect(outcome.statusDetail).toContain(code);
     }
+  });
+
+  describe("Job signature verification hardening (Phase 7)", () => {
+    const jobSecret = "verification-worker-shared-secret-key-12345";
+    const resolver = {
+      async resolveDeployedHash(): Promise<string> {
+        return "11".repeat(32);
+      },
+    };
+    const executor = stubBuildExecutor();
+
+    it("rejects unsigned job payload when jobSecret is configured", async () => {
+      const outcome = await runVerification(repoJob, {
+        executor,
+        resolver,
+        jobSecret,
+      });
+      expect(outcome.status).toBe("failed");
+      expect(outcome.statusDetail).toContain("Signature verification failed (missing_signature)");
+      expect(outcome.isRetryable).toBe(false);
+    });
+
+    it("rejects tampered job payload", async () => {
+      const { signJobPayload } = await import("./job-signature");
+      const sig = signJobPayload(repoJob, jobSecret);
+      const tamperedJob: VerificationJobInput = {
+        ...repoJob,
+        commitHash: "ffffffffffffffffffffffffffffffffffffffff",
+        signature: sig,
+      };
+
+      const outcome = await runVerification(tamperedJob, {
+        executor,
+        resolver,
+        jobSecret,
+      });
+      expect(outcome.status).toBe("failed");
+      expect(outcome.statusDetail).toContain("Signature verification failed (invalid_signature)");
+      expect(outcome.isRetryable).toBe(false);
+    });
+
+    it("accepts validly signed job payload and runs verification", async () => {
+      const { signJobPayload } = await import("./job-signature");
+      const signedJob: VerificationJobInput = {
+        ...repoJob,
+        signature: signJobPayload(repoJob, jobSecret),
+      };
+
+      const outcome = await runVerification(signedJob, {
+        executor,
+        resolver,
+        jobSecret,
+      });
+      // Verification proceeds past signature check to hash comparison
+      expect(outcome.statusDetail).not.toContain("Signature verification failed");
+    });
   });
 });

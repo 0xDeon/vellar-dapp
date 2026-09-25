@@ -267,29 +267,12 @@ read oracle. Same build-box gating as H2.
   **refuted** (`close-prs-*.yml` only _close_ PRs — no checkout, no merge). **Fix:**
   `autoDeploy: false`, required status checks on main, `pnpm audit` gate.
 
-  > **Status (FIX 11): PARTIALLY CLOSED — repo-side done, two settings remain manual.**
-  > Done in-repo on this branch:
-  >
-  > - **`pnpm audit --audit-level=high` added to CI** (`.github/workflows/ci.yml`, after Install):
-  >   a newly-introduced high/critical advisory now blocks the build. Currently green (FIX 8 took
-  >   the count to 0 high).
-  > - **`autoDeploy: false` on the Render service** (`render.yaml`): Render no longer ships every
-  >   push to `main`; deploy is a manual/tagged action after CI passes.
-  >
-  > **Remains MANUAL (cannot be set from a committed file — dashboard/settings only):**
-  >
-  > 1. **GitHub branch protection on `main`** — mark the `ci` check (and, if desired,
-  >    `pnpm audit`) as a **required status check**, and require PRs (no direct pushes). This is
-  >    a repo Settings → Branches value; nothing in the repo can enforce it.
-  > 2. **Railway `autoDeploy`** — `railway.json` has no autoDeploy field; Railway's auto-deploy is
-  >    a dashboard setting. If Railway is a live target, turn it off there too (or confirm Render
-  >    is the only deploy target and Railway is unused).
-  > 3. **Confirm which platform is actually live** (V6, still open) — the gate only matters on the
-  >    platform that deploys. If only Render is live, item 2 is moot.
-  >
-  > Until the branch protection (item 1) is set, CI is a signal, not a gate — a maintainer can
-  > still merge red. The repo-side changes make the gate _possible_; the dashboard settings make
-  > it _binding_.
+  > **Status (FIX 11 & #426): CLOSED — closed-by-config & posture decision.**
+  > - **`pnpm audit --audit-level=high` active in CI** (`.github/workflows/ci.yml`).
+  > - **`autoDeploy: false` confirmed in Render dashboard** (matches `render.yaml:22-23`). Render does not auto-deploy on push.
+  > - **Railway `autoDeploy`:** Unused (Render is confirmed the sole live deploy target).
+  > - **Branch protection posture decision:** Given a single-maintainer repository on a free organization where push-allowlist restrictions are unavailable, peer-review requirements are counter-productive (requiring self-bypass daily). The enforced posture blocks force-pushes and deletions on both `main` and `dev` (the default branch since 2026-09-23), with CI status checks gating merges.
+  > - **Final severity:** Downgraded from Med to **Low** and marked closed.
 
 ---
 
@@ -1137,7 +1120,7 @@ mainnet blockers with owners, and the go/no-go conditions. As of merged `main` t
 | **M6**      | DB fallback fails open + health lies                     | Med  | closed-by-test (readiness) + RA-4 (boot inversion)                                                |
 | **M7**      | No reaper for stranded `building` rows                   | Med  | closed-by-test (reaper + dedup + queue cap)                                                       |
 | **M8**      | Stale fast-uri override                                  | Med  | closed-by-config (lockfile pin; no test)                                                          |
-| **M9**      | Deploy from main, no CI gate                             | Med  | closed-by-config PARTIAL (audit gate + autoDeploy:false; branch-protection is dashboard — see V6) |
+| **M9**      | Deploy from main, no CI gate                             | Low  | closed-by-config & posture (Render autoDeploy:false confirmed; branch protection posture recorded) |
 | **L1**      | /policies/deploy unverified `deployed` flag              | Low  | closed-by-test (on-chain attach decode, #230)                                                     |
 | **L2**      | Downstream 0.0.0.0 bind                                  | Low  | closed-by-config (loopback bind) + **V6 dashboard**                                               |
 | **L3**      | No web-app-origin allowlist on pair                      | Low  | closed-by-test (fail-closed allowlist, #230)                                                      |

@@ -126,6 +126,10 @@ export interface DockerBuildExecutorConfig {
   cpus?: string;
   /** Max processes in the container (fork-bomb guard). Default 512. */
   pidsLimit?: number;
+  /** Container tmpfs size cap for /tmp (e.g. "512m"). Default "512m". */
+  tmpfsSize?: string;
+  /** Storage driver options (e.g. "size=10G" for disk limits). */
+  storageOpt?: string;
   /** Extra args passed to `stellar contract build` (e.g. a package selector). */
   buildArgs?: string[];
   /** Injected for tests; defaults to spawning real processes. `timeoutMs`, when
@@ -159,6 +163,8 @@ export function dockerBuildExecutor(config: DockerBuildExecutorConfig): BuildExe
   const memory = config.memory ?? "2g";
   const cpus = config.cpus ?? "2";
   const pidsLimit = config.pidsLimit ?? 512;
+  const tmpfsSize = config.tmpfsSize ?? "512m";
+  const storageOpt = config.storageOpt;
   const run = config.run ?? defaultRun;
 
   return {
@@ -250,7 +256,8 @@ export function dockerBuildExecutor(config: DockerBuildExecutorConfig): BuildExe
             String(pidsLimit),
             "--read-only",
             "--tmpfs",
-            "/tmp:exec",
+            `/tmp:exec,size=${tmpfsSize}`,
+            ...(storageOpt ? ["--storage-opt", storageOpt] : []),
             "--cap-drop=ALL",
             "--security-opt",
             "no-new-privileges",

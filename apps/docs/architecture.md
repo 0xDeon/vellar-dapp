@@ -29,11 +29,8 @@ never duplicated across surfaces.
 | `@vellar/passkey`          | implemented | WebAuthn support detection + error normalization                                                                                                                                         |
 | `@vellar/provider-sdk`     | implemented | dApp provider protocol (zod-validated), page provider, per-origin permissions                                                                                                            |
 | `@vellar/service-kit`      | implemented | Shared backend bootstrap — health route, startup/shutdown, safe DB connect                                                                                                               |
-| `@vellar/policy-sdk`       | stub        | Policy client helpers (logic currently lives in the web app + policy-service)                                                                                                            |
-| `@vellar/lifecycle-sdk`    | stub        | Lifecycle client helpers (logic currently in the web app + lifecycle-service)                                                                                                            |
-| `@vellar/verification-sdk` | stub        | Verification client helpers (awaits the verification service)                                                                                                                            |
-| `@vellar/ui`               | stub        | Shared UI primitives                                                                                                                                                                     |
-
+| `@vellar/verification-sdk` | implemented | Verification client helpers and TrustBadge integration |
+| `@vellar/ui`               | implemented | Shared UI primitives (TrustBadge) |
 > The **stub** packages are intentional placeholders. Their functionality
 > exists today inside the apps and services; extracting it into these shared
 > packages is planned work, not missing behavior.

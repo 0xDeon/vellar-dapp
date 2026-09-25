@@ -58,4 +58,30 @@ describe("derivation gate (V1)", () => {
       }),
     ).toThrow(DerivationMismatchError);
   });
+
+  it("cross-checks derivation against independent Stellar SDK ContractIdPreimage calculation", async () => {
+    // Cross-check test (Issue #424): independently calculate the contract address
+    // using raw Stellar SDK HashIdPreimage to verify passkey-kit's derivation logic
+    const { Address, hash, Keypair, StrKey, xdr } = await import("@stellar/stellar-sdk");
+    const keyIdBuffer = Buffer.from(KEY_ID, "base64url");
+    const salt = hash(keyIdBuffer);
+    const deployerPubKey = Keypair.fromRawEd25519Seed(hash(Buffer.from("kalepail"))).publicKey();
+
+    const fromKit = deriveWalletContractId(KEY_ID, { networkPassphrase: TESTNET });
+
+    const preimage = xdr.HashIdPreimage.envelopeTypeContractId(
+      new xdr.HashIdPreimageContractId({
+        networkId: hash(Buffer.from(TESTNET)),
+        contractIdPreimage: xdr.ContractIdPreimage.contractIdPreimageFromAddress(
+          new xdr.ContractIdPreimageFromAddress({
+            address: Address.fromString(deployerPubKey).toScAddress(),
+            salt,
+          }),
+        ),
+      }),
+    );
+    const expectedContractId = StrKey.encodeContract(hash(preimage.toXDR()));
+
+    expect(fromKit).toBe(expectedContractId);
+  });
 });
