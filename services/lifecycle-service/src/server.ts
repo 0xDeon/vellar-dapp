@@ -30,6 +30,12 @@ const planBodySchema = z.object({
   destination: z.string().min(1),
 });
 
+import type { CachedAccountReader } from "./account-cache";
+
+function isCachedAccountReader(reader: AccountReader): reader is CachedAccountReader {
+  return typeof (reader as Partial<CachedAccountReader>).invalidate === "function";
+}
+
 export interface LifecycleServiceDeps {
   reader: AccountReader;
   networkPassphrase?: string;
@@ -276,8 +282,13 @@ export function buildServer(deps: LifecycleServiceDeps): FastifyInstance {
       recordOutcome(domainMetrics.cleanupCompleted, "lifecycle-service", "failure");
       return reply.code(409).send({ error: "not_merge_ready", plan });
     }
+    const step = buildMergeStep(account, destination, passphrase);
+    if (isCachedAccountReader(deps.reader)) {
+      deps.reader.invalidate(accountId);
+      deps.reader.invalidate(destination);
+    }
     recordOutcome(domainMetrics.cleanupCompleted, "lifecycle-service", "success");
-    return reply.send({ step: buildMergeStep(account, destination, passphrase) });
+    return reply.send({ step });
   });
 
   return app;

@@ -1,9 +1,10 @@
 import {
   errorPayload,
+  hasCapability,
+  normalizeOrigin,
   type ProviderRequest,
   type ResponsePayload,
 } from "@vellar/provider-sdk";
-import { hasCapability, normalizeOrigin } from "@vellar/permission-service";
 import { isPairOriginAllowed, type PairOriginPolicy } from "./pair-origins";
 import type { ExtensionState } from "./state";
 
@@ -21,7 +22,6 @@ function respond(payload: ResponsePayload, revokeGrant?: boolean): RouteDecision
   return revokeGrant ? { kind: "respond", payload, revokeGrant } : { kind: "respond", payload };
 }
 
-import { sanitizeString } from "./sanitization";
 
 export function routeProviderRequest(
   request: ProviderRequest,
@@ -36,7 +36,6 @@ export function routeProviderRequest(
   if (!origin) {
     return respond(errorPayload("invalid_request", "Requests from this origin are not supported"));
   }
-  const cleanOrigin = sanitizeString(origin);
 
   // Pairing is the one method that must work while nothing is paired yet.
   // Always requires explicit popup approval (origin + wallet shown), and the
@@ -50,7 +49,7 @@ export function routeProviderRequest(
         errorPayload("unauthorized", "This origin is not permitted to pair the Vellar extension"),
       );
     }
-    return { kind: "needs-approval", origin: cleanOrigin };
+    return { kind: "needs-approval", origin };
   }
 
   // Status probe: no approval, but only confirms an address+network the
@@ -69,7 +68,12 @@ export function routeProviderRequest(
     );
   }
 
-  if (request.method !== "disconnect" && request.params.network !== wallet.network) {
+  if (
+    request.method !== "disconnect" &&
+    request.method !== "get_network" &&
+    "network" in request.params &&
+    request.params.network !== wallet.network
+  ) {
     return respond(
       errorPayload(
         "disconnected",
@@ -86,7 +90,7 @@ export function routeProviderRequest(
           result: { address: wallet.address, network: wallet.network },
         });
       }
-      return { kind: "needs-approval", origin: cleanOrigin };
+      return { kind: "needs-approval", origin };
     }
 
     case "get_address": {
@@ -105,7 +109,34 @@ export function routeProviderRequest(
       }
       // Every transaction requires explicit approval — a grant only allows
       // the origin to ASK (§5.3 no silent signing).
-      return { kind: "needs-approval", origin: cleanOrigin };
+      return { kind: "needs-approval", origin };
+    }
+
+    case "sign_auth_entry": {
+      if (!hasCapability(state.grants, origin, wallet.network, "sign")) {
+        return respond(errorPayload("unauthorized", "Connect first to request signing"));
+      }
+      // Auth entry signing requires explicit approval (no silent signing).
+      return { kind: "needs-approval", origin };
+    }
+
+    case "sign_message": {
+      if (!hasCapability(state.grants, origin, wallet.network, "sign")) {
+        return respond(errorPayload("unauthorized", "Connect first to request signing"));
+      }
+      // Message signing requires explicit approval (no silent signing).
+      return { kind: "needs-approval", origin };
+    }
+
+    case "get_network": {
+      const networkPassphrase =
+        wallet.network === "mainnet"
+          ? "Public Global Stellar Network ; September 2015"
+          : "Test SDF Network ; September 2015";
+      return respond({
+        method: "get_network",
+        result: { network: wallet.network, networkPassphrase },
+      });
     }
 
     case "disconnect": {

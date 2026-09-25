@@ -1,6 +1,11 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { configFromEnv } from "./config";
-import { buildServer, createMemoryVerificationRepository, type BuildJobQueue } from "./server";
+import {
+  buildServer,
+  createMemoryVerificationRepository,
+  fakeFacilitatorClient,
+  type BuildJobQueue,
+} from "./server";
 
 // buildServer() registers the x402 payment gate, which resolves its public
 // resource URL from the environment and refuses to fall back to the local
@@ -69,7 +74,11 @@ describe("staging config (#338)", () => {
 
     const records = createMemoryVerificationRepository();
     const queue: BuildJobQueue = { async enqueue() {} };
-    const app = buildServer({ records, queue });
+    const app = buildServer({
+      records,
+      queue,
+      x402FacilitatorClient: fakeFacilitatorClient(),
+    });
 
     try {
       const response = await app.inject({ method: "GET", url: "/health" });

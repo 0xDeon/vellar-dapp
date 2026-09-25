@@ -433,6 +433,9 @@ importers:
 
   services/permission-service:
     dependencies:
+      '@vellar/provider-sdk':
+        specifier: workspace:*
+        version: link:../../packages/provider-sdk
       '@vellar/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit
@@ -498,6 +501,9 @@ importers:
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
+      vellar-sdk:
+        specifier: ^0.6.2
+        version: 0.6.2(@stellar/stellar-sdk@16.0.1)(@types/react@19.2.17)(passkey-kit@0.14.0(@stellar/stellar-sdk@16.0.1))(react@19.2.7)
       vitest:
         specifier: ^3.2.0
         version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.33.0)(tsx@4.23.1)

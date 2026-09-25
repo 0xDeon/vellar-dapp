@@ -54,11 +54,12 @@ function createDeps(overrides?: Partial<DeploymentDeps>): DeploymentDeps {
     policies: repo,
     deployer: undefined,
     verifyAttach: undefined,
+    verifyAttachTx: (overrides?.verifyAttachTx ?? overrides?.verifyAttach) as never,
     budget: undefined,
     budgetNetwork: undefined,
     network: "testnet",
     networkPassphrase: "Test SDF Network ; September 2015",
-    now: () => new Date("2026-08-29T12:00:00Z"),
+    now: () => new Date("2026-08-29T12:00:00.000Z"),
     ...overrides,
   };
 }
@@ -134,7 +135,7 @@ describe("deployPolicyInstance", () => {
       contractId: C1,
       wallet: WALLET,
       txHash: "deploytx",
-      deployedAt: "2026-08-29T12:00:00Z",
+      deployedAt: "2026-08-29T12:00:00.000Z",
     });
 
     // Result includes contractId
@@ -265,7 +266,7 @@ describe("verifyAndRecordAttach", () => {
     expect(updated.deployment).toEqual({
       contractId: C1,
       txHash: "attachtx",
-      deployedAt: "2026-08-29T12:00:00Z",
+      deployedAt: "2026-08-29T12:00:00.000Z",
     });
   });
 
@@ -370,7 +371,7 @@ describe("verifyAndRecordAttach", () => {
     expect(updated.deployment).toEqual({
       contractId: C1,
       txHash: "anytx",
-      deployedAt: "2026-08-29T12:00:00Z",
+      deployedAt: "2026-08-29T12:00:00.000Z",
     });
   });
 });
