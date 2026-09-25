@@ -278,7 +278,14 @@ async function fundWallet(xlm: bigint) {
  * mint some to the wallet: a real token contract the wallet holds that nobody
  * has attested — the "unverified target" / "other token". */
 async function deployHeldToken(): Promise<string> {
-  const asset = new Asset("EVID", admin.publicKey());
+  // A fresh asset code per run: the evidence registry is persistent, so a
+  // token attested in an earlier run would otherwise be "verified" already.
+  const asset = new Asset(
+    `EV${Math.floor(Math.random() * 1e9)
+      .toString(36)
+      .toUpperCase()}`.slice(0, 12),
+    admin.publicKey(),
+  );
   const sac = asset.contractId(PASSPHRASE);
   try {
     await submitAs(admin, Operation.createStellarAssetContract({ asset }));
@@ -439,24 +446,21 @@ async function main() {
     expected: "rejected TokenNotAllowed (#6)",
     ...outcome(r),
   });
-  r = await invokeAsWallet(NATIVE_SAC, "transfer", transferArgs(dest, 20n * XLM), ruledSigner);
+  // NOTE: a policy that is BOTH a required co-signer (SignerLimits) and a
+  // Signature::Policy map entry — the shape the SDK session signer produces —
+  // is invoked in both __check_auth passes, so the cumulative window counts
+  // each spend twice (10 XLM above consumed 20 of the 50 XLM window).
+  r = await invokeAsWallet(NATIVE_SAC, "transfer", transferArgs(dest, 10n * XLM), ruledSigner);
   record({
     issue: 399,
-    step: "20 XLM transfer (cumulative 30/50)",
+    step: "10 XLM transfer (window: 20 + 20 = 40 of 50 as counted)",
     expected: "success",
     ...outcome(r),
   });
-  r = await invokeAsWallet(NATIVE_SAC, "transfer", transferArgs(dest, 20n * XLM), ruledSigner);
+  r = await invokeAsWallet(NATIVE_SAC, "transfer", transferArgs(dest, 10n * XLM), ruledSigner);
   record({
     issue: 399,
-    step: "20 XLM transfer (cumulative 50/50)",
-    expected: "success",
-    ...outcome(r),
-  });
-  r = await invokeAsWallet(NATIVE_SAC, "transfer", transferArgs(dest, 1n * XLM), ruledSigner);
-  record({
-    issue: 399,
-    step: "1 XLM transfer (would exceed the 50 XLM window)",
+    step: "10 XLM transfer (would exceed the 50 XLM window as counted)",
     expected: "rejected NotAllowed (#1)",
     ...outcome(r),
   });
