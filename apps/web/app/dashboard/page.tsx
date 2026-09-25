@@ -24,10 +24,18 @@ export default function Dashboard() {
   useEffect(() => {
     // Emit funnel completion event when dashboard mounts with active session
     if (session) {
+      const sessionIdValue =
+        (session as unknown as { sessionId?: string }).sessionId ??
+        session.serverSessionId ??
+        session.accountId;
+      const contractIdValue =
+        (session as unknown as { contractId?: string }).contractId ??
+        session.accountId;
+
       walletCreationEvents.funnelCompleted({
         network: session.network,
-        contractId: session.contractId,
-        sessionId: getAnalyticsTracker().hashValue(session.sessionId),
+        contractId: contractIdValue,
+        sessionId: getAnalyticsTracker().hashValue(sessionIdValue),
       });
       void getAnalyticsTracker().flush();
     }

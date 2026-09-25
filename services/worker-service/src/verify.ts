@@ -89,7 +89,8 @@ export async function runVerification(
       if (err.code === "timeout") {
         throw err;
       }
-      return {
+      const isTransient = isTransientFailure(err);
+      const outcome: VerificationOutcome = {
         status: "failed",
         statusDetail: `Could not resolve the deployed contract (${err.code}).`,
         log: `Could not resolve the deployed contract: ${err.message} (${err.code}).`,

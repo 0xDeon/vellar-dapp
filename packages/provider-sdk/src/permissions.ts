@@ -49,7 +49,7 @@ export function normalizeOrigin(value: string): string | undefined {
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
   if (url.origin === "null") return undefined;
-  if (url.origin !== value) return undefined; // must be a bare origin, no path/query
+  if (url.origin.toLowerCase() !== value.toLowerCase()) return undefined; // must be a bare origin, no path/query
   if (url.hostname.endsWith(".")) {
     // Rebuild the origin with the single trailing dot removed. Set via the URL
     // so the origin string is recomputed consistently (host + port).

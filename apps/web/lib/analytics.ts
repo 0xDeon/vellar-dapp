@@ -50,7 +50,8 @@ export interface AnalyticsEvent {
  * @param value - The value to hash
  * @returns Hashed value (12 hex chars)
  */
-function hashSensitiveValue(value: string): string {
+function hashSensitiveValue(value?: string | null): string {
+  if (!value) return "";
   const hash = crypto.createHash("sha256").update(value).digest("hex");
   return hash.slice(0, 12);
 }
@@ -136,8 +137,12 @@ export function createAnalyticsTracker() {
    * Hash a sensitive value (e.g., session ID) before emitting it in an event.
    * Use this to include correlation IDs without exposing sensitive material.
    */
-  function hashValue(value: string): string {
+  function hashValue(value?: string | null): string {
     return hashSensitiveValue(value);
+  }
+
+  function clearQueue(): void {
+    eventQueue.length = 0;
   }
 
   return {
@@ -145,7 +150,8 @@ export function createAnalyticsTracker() {
     flush,
     hashValue,
     pageSessionId,
-    getQueue: () => [...eventQueue], // For testing
+    getQueue: () => eventQueue, // For testing: returns array reference so tests can inspect or drain (.splice(0))
+    clearQueue,
   };
 }
 

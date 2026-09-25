@@ -143,3 +143,58 @@ async function defaultTrustedLatestLedger(rpcUrl: string): Promise<number> {
   const { sequence } = await server.getLatestLedger();
   return sequence;
 }
+
+/**
+ * Signs a single SorobanAuthorizationEntry XDR for the paired wallet.
+ */
+export async function signAuthEntryXdr(input: {
+  authEntry: string;
+  wallet: PairedWallet;
+  deviceKeyPair: CryptoKeyPair;
+  deviceRawPublicKey: Uint8Array;
+  getTrustedLatestLedger?: (rpcUrl: string) => Promise<number>;
+  mainnetRpcUrl?: string;
+}): Promise<string> {
+  const { wallet } = input;
+  const networkPassphrase = NETWORK_PASSPHRASES[wallet.network];
+
+  const [{ PasskeyKit }, { xdr }] = await Promise.all([
+    import("passkey-kit"),
+    import("@stellar/stellar-sdk"),
+  ]);
+
+  const kit = new PasskeyKit({
+    rpcUrl: wallet.rpcUrl,
+    networkPassphrase,
+    walletWasmHash: wallet.walletWasmHash,
+  });
+  await kit.connectWallet({ keyId: wallet.keyId });
+  if (kit.contractId !== wallet.address) {
+    throw new PairedWalletMismatchError(wallet.address, kit.contractId);
+  }
+
+  const trustedRpcUrl = resolveTrustedRpcUrl(
+    wallet.network,
+    input.mainnetRpcUrl ?? configuredMainnetRpcUrl(),
+  );
+  const fetchLedger = input.getTrustedLatestLedger ?? defaultTrustedLatestLedger;
+  const anchorLedger = await fetchLedger(trustedRpcUrl);
+  const expiration = boundedExpirationLedger(anchorLedger);
+
+  const entry = xdr.SorobanAuthorizationEntry.fromXDR(input.authEntry, "base64");
+  const signer = createDeviceSigner(input.deviceKeyPair, input.deviceRawPublicKey);
+  const signed = await kit.signAuthEntry(entry, signer, { expiration });
+  return signed.toXDR("base64");
+}
+
+/**
+ * Signs an arbitrary message using the non-extractable device key.
+ */
+export async function signMessageBytes(input: {
+  message: string;
+  deviceKeyPair: CryptoKeyPair;
+}): Promise<string> {
+  const bytes = new TextEncoder().encode(input.message);
+  const signature = await signWithDeviceKey(input.deviceKeyPair, bytes);
+  return Buffer.from(signature).toString("base64");
+}

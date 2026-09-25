@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
-import { buildServer as buildLifecycleServer } from "./server";
+import { buildServer as buildLifecycleServer, fakeFacilitatorClient } from "./server";
 import { createMemoryWalletRepository } from "../../wallet-service/src/repository";
 import { buildServer as buildWalletServer } from "../../wallet-service/src/server";
-import type { AccountRecord } from "./horizon";
+import type { HorizonAccount } from "./horizon";
 
 // buildServer() registers the x402 payment gate, which resolves its public
 // resource URL from the environment and refuses to fall back to the local
@@ -20,54 +20,48 @@ afterAll(() => {
 });
 
 const SOURCE_ACCOUNT = "GAKB2VWTROSQP56WMLR2EJP2W2ZAKX2HGYW2YWTROSQP56WMLR2EJP2W";
-const DEST_ACCOUNT = "GBX2VWTROSQP56WMLR2EJP2W2ZAKX2HGYW2YWTROSQP56WMLR2EJP2X";
-const FAILED_ACCOUNT = "GFAIL2VWTROSQP56WMLR2EJP2W2ZAKX2HGYW2YWTROSQP56WMLR2EJP2F";
+const DEST_ACCOUNT = "GBX2VWTROSQP56WMLR2EJP2W2ZAKX2HGYW2YWTROSQP56WMLR2EJP2X2";
+const FAILED_ACCOUNT = "GFAILVWTROSQP56WMLR2EJP2W2ZAKX2HGYW2YWTROSQP56WMLR2EJP2F";
 
 describe("account merge across services integration tests", () => {
-  let mockAccounts: Map<string, AccountRecord>;
+  let mockAccounts: Map<string, HorizonAccount>;
 
   beforeEach(() => {
-    mockAccounts = new Map<string, AccountRecord>([
+    mockAccounts = new Map<string, HorizonAccount>([
       [
         SOURCE_ACCOUNT,
         {
-          id: SOURCE_ACCOUNT,
+          accountId: SOURCE_ACCOUNT,
           sequence: "100",
-          balances: [{ asset_type: "native", balance: "10.5000000" }],
-          subentry_count: 0,
-          num_sponsoring: 0,
-          num_sponsored: 0,
-          flags: { auth_required: false, auth_revocable: false, auth_immutable: false, auth_clawback_enabled: false },
-          signers: [{ weight: 1, key: SOURCE_ACCOUNT, type: "ed25519_public_key" }],
+          balances: [{ assetType: "native", balance: "10.5000000" }],
+          dataKeys: [],
+          offers: [],
+          openOffers: 0,
         },
       ],
       [
         DEST_ACCOUNT,
         {
-          id: DEST_ACCOUNT,
+          accountId: DEST_ACCOUNT,
           sequence: "200",
-          balances: [{ asset_type: "native", balance: "50.0000000" }],
-          subentry_count: 0,
-          num_sponsoring: 0,
-          num_sponsored: 0,
-          flags: { auth_required: false, auth_revocable: false, auth_immutable: false, auth_clawback_enabled: false },
-          signers: [{ weight: 1, key: DEST_ACCOUNT, type: "ed25519_public_key" }],
+          balances: [{ assetType: "native", balance: "50.0000000" }],
+          dataKeys: [],
+          offers: [],
+          openOffers: 0,
         },
       ],
       [
         FAILED_ACCOUNT,
         {
-          id: FAILED_ACCOUNT,
+          accountId: FAILED_ACCOUNT,
           sequence: "150",
           balances: [
-            { asset_type: "native", balance: "5.0000000" },
-            { asset_type: "credit_alphanum4", asset_code: "USDC", balance: "100.00", limit: "1000", issuer: "GUSDC..." },
+            { assetType: "native", balance: "5.0000000" },
+            { assetType: "credit_alphanum4", assetCode: "USDC", balance: "100.00", assetIssuer: DEST_ACCOUNT },
           ],
-          subentry_count: 1,
-          num_sponsoring: 0,
-          num_sponsored: 0,
-          flags: { auth_required: false, auth_revocable: false, auth_immutable: false, auth_clawback_enabled: false },
-          signers: [{ weight: 1, key: FAILED_ACCOUNT, type: "ed25519_public_key" }],
+          dataKeys: [],
+          offers: [],
+          openOffers: 0,
         },
       ],
     ]);
@@ -75,10 +69,10 @@ describe("account merge across services integration tests", () => {
 
   it("performs a full account merge across services and verifies state consistency", async () => {
     const reader = {
-      getAccount: async (id: string) => mockAccounts.get(id) ?? null,
+      getAccount: async (id: string) => mockAccounts.get(id),
     };
 
-    const lifecycleApp = buildLifecycleServer({ reader });
+    const lifecycleApp = buildLifecycleServer({ reader, x402FacilitatorClient: fakeFacilitatorClient() });
     await lifecycleApp.ready();
 
     const walletRepo = createMemoryWalletRepository();
