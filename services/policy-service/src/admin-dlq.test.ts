@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 import { registerAdminDLQRoutes } from "./admin-dlq";
@@ -22,8 +22,9 @@ describe("Admin DLQ API", () => {
 
     dlqMetrics = {
       dlq_enqueue_total: { inc: vi.fn() },
+      dlq_requeue_total: { inc: vi.fn() },
       dlq_depth_gauge: { set: vi.fn() },
-    };
+    } as any;
 
     registerAdminDLQRoutes(app, {
       dlqStore,

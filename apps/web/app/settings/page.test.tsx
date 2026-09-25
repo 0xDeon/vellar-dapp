@@ -19,6 +19,10 @@ vi.mock("@/lib/sessions", () => ({
   useSessions: useSessionsMock,
   useRevokeSession: () => ({ mutateAsync, isPending: false }),
 }));
+vi.mock("@/lib/agent-keys", () => ({
+  useAgentKeys: () => ({ data: [], isPending: false, isError: false }),
+  useRevokeAgentKey: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
 
 // Signer hooks (#401): the query is mocked at the hook seam (like sessions);
 // the pure classification/lockout logic it wraps is exercised for real via

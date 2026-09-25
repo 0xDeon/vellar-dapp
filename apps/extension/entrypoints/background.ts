@@ -8,7 +8,7 @@ import {
 } from "@vellar/provider-sdk";
 import { browserKv } from "../lib/browser-kv";
 import { createIdbDeviceKeyStore, devicePublicKeyHex, ensureDeviceKey } from "../lib/device-key";
-import { signTransactionXdr } from "../lib/tx-signer";
+import { signTransactionXdr, signAuthEntryXdr, signMessageBytes } from "../lib/tx-signer";
 import type {
   ExtensionMessage,
   PendingApprovalSummary,
@@ -195,6 +195,61 @@ export default defineBackground(() => {
       } catch (err) {
         void backgroundErrorReporter.reportError(err, {
           method: "sign_transaction",
+          origin: entry.origin,
+        });
+        entry.resolve(
+          errorPayload("internal", err instanceof Error ? err.message : "Signing failed"),
+        );
+      }
+      return true;
+    }
+
+    if (entry.request.method === "sign_auth_entry") {
+      try {
+        const store = createIdbDeviceKeyStore();
+        const pair = await store.get();
+        if (!pair) {
+          entry.resolve(errorPayload("disconnected", "No device signer — re-pair the extension"));
+          return true;
+        }
+        const rawPublicKey = Uint8Array.from(
+          (await devicePublicKeyHex(pair)).match(/../g)!.map((b) => parseInt(b, 16)),
+        );
+        const signedAuthEntry = await signAuthEntryXdr({
+          authEntry: entry.request.params.authEntry,
+          wallet,
+          deviceKeyPair: pair,
+          deviceRawPublicKey: rawPublicKey,
+        });
+        entry.resolve({ method: "sign_auth_entry", result: { signedAuthEntry } });
+      } catch (err) {
+        void backgroundErrorReporter.reportError(err, {
+          method: "sign_auth_entry",
+          origin: entry.origin,
+        });
+        entry.resolve(
+          errorPayload("internal", err instanceof Error ? err.message : "Signing failed"),
+        );
+      }
+      return true;
+    }
+
+    if (entry.request.method === "sign_message") {
+      try {
+        const store = createIdbDeviceKeyStore();
+        const pair = await store.get();
+        if (!pair) {
+          entry.resolve(errorPayload("disconnected", "No device signer — re-pair the extension"));
+          return true;
+        }
+        const signedMessage = await signMessageBytes({
+          message: entry.request.params.message,
+          deviceKeyPair: pair,
+        });
+        entry.resolve({ method: "sign_message", result: { signedMessage } });
+      } catch (err) {
+        void backgroundErrorReporter.reportError(err, {
+          method: "sign_message",
           origin: entry.origin,
         });
         entry.resolve(

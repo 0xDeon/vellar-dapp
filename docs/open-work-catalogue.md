@@ -53,22 +53,16 @@ externally** — flagged below.
 
 ---
 
-## Group 3 — Empty SDK packages
+## Group 3 — Empty SDK packages (Resolved)
 
-Two workspace packages are literally `export {}`. This matters more than it
-looks: the plan blocks the docs site on these having stable public APIs.
+Resolved on 2026-09-25 (Issue #413): `packages/policy-sdk` and `packages/lifecycle-sdk` stubs were deleted. Policy support lives natively on the `vellar-sdk` wallet handle (`wallet.policies`) per the 2026-07-22 decision, and the web app interacts directly with `lifecycle-service` without requiring a redundant SDK layer. Unused entries were removed from `apps/web/next.config.ts`, clearing the docs-site blocker.
 
 | Package                     | State                                                                                                                                                                   |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/policy-sdk`       | **Stub** — `export {}` and a comment. Both are declared in `apps/web/next.config.ts` transpile list, so the wiring is already there.                                    |
-| `packages/lifecycle-sdk`    | **Stub** — `export {}` and a comment.                                                                                                                                   |
+| `packages/policy-sdk`       | **Deleted** — folded into `vellar-sdk` wallet handle (`wallet.policies`).                                                                                               |
+| `packages/lifecycle-sdk`    | **Deleted** — direct web-to-service communication; no standalone SDK needed.                                                                                            |
 | `packages/verification-sdk` | Real: 237 lines + tests.                                                                                                                                                |
-| `packages/ui`               | Real — a 2-line barrel re-exporting a tested `TrustBadge`, used by both the web app and the extension popup. (Line count alone makes this look like a stub; it is not.) |
-
-The backend services these would wrap (`policy-service`, `lifecycle-service`)
-are complete and tested, so this is packaging and public-API design rather than
-new functionality. Worth deciding whether they are needed at all before building
-them — the web app currently talks to those services without an SDK layer.
+| `packages/ui`               | Real — a 2-line barrel re-exporting a tested `TrustBadge`, used by both the web app and the extension popup.                                                            |
 
 ---
 
@@ -137,11 +131,12 @@ constraints are the difference between a real feature and security theatre.
 Found during a stack audit on 2026-09-05/06. None of these are BUILD-PLAN items,
 but all are real:
 
-- **Web app test suite: 0 failures (62 passing).** A false report of 34 failures
-  on 2026-09-06 was caused by invoking vitest directly without the
-  `NODE_OPTIONS=--no-experimental-webstorage` flag that the package script sets.
-  The flag has been moved into `vitest.config.ts` and the suite now passes under
-  any invocation method.
+- **Web app test suite: 0 failures (116 passing as of 2026-09-25).** Previously
+  recorded as 62 passing, the suite grew to 116 tests. An audit on 2026-09-23 found
+  8 failures across `app/dashboard/page.test.tsx` and `lib/analytics.test.ts`
+  caused by unhandled undefined values in `hashSensitiveValue` and test queue pollution
+  from `getQueue()` returning a shallow clone. These were resolved on 2026-09-25
+  alongside adding `clearQueue()`, restoring full green across all 116 tests.
 - **The explorer has no tests and no CI.** It is the strongest piece of external
   evidence in the pitch and its correctness is unguarded. It has already shipped
   one classifier bug that silently missed a settlement.

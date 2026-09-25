@@ -177,4 +177,40 @@ describe("routeProviderRequest", () => {
       origin: "https://evil.example",
     });
   });
+
+  it("sign_auth_entry routes to needs-approval when origin has sign grant", () => {
+    const decision = routeProviderRequest(
+      { method: "sign_auth_entry", params: { authEntry: "entry_xdr", network: "testnet" } },
+      ORIGIN,
+      granted,
+    );
+    expect(decision).toEqual({ kind: "needs-approval", origin: ORIGIN });
+  });
+
+  it("sign_message routes to needs-approval when origin has sign grant", () => {
+    const decision = routeProviderRequest(
+      { method: "sign_message", params: { message: "hello", network: "testnet" } },
+      ORIGIN,
+      granted,
+    );
+    expect(decision).toEqual({ kind: "needs-approval", origin: ORIGIN });
+  });
+
+  it("get_network responds directly with network info", () => {
+    const decision = routeProviderRequest(
+      { method: "get_network", params: {} },
+      ORIGIN,
+      granted,
+    );
+    expect(decision).toEqual({
+      kind: "respond",
+      payload: {
+        method: "get_network",
+        result: {
+          network: "testnet",
+          networkPassphrase: "Test SDF Network ; September 2015",
+        },
+      },
+    });
+  });
 });

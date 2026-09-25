@@ -105,20 +105,21 @@ export function buildServer(deps: PolicyServiceDeps = {}): FastifyInstance {
   const now = deps.now ?? (() => new Date());
   const deployer = deps.deployer;
   const verifyAttach = deps.verifyAttach;
-  const deploymentDeps: DeploymentDeps = {
-    policies,
-    deployer: deps.deployer,
-    verifyAttach,
-    budget: deps.budget,
-    budgetNetwork: deps.budgetNetwork,
-    network: deps.network,
-    networkPassphrase: deps.networkPassphrase,
-    now,
-  };
   const network = deps.network ?? "testnet";
   const networkPassphrase = deps.networkPassphrase ?? "Test SDF Network ; September 2015";
   const csrfSecret =
     deps.csrfSecret ?? process.env.CSRF_SECRET ?? "vellar-policy-admin-csrf-default-secret";
+
+  const deploymentDeps: DeploymentDeps = {
+    policies,
+    deployer,
+    verifyAttach,
+    budget: deps.budget,
+    budgetNetwork: deps.budgetNetwork,
+    network,
+    networkPassphrase,
+    now,
+  };
 
   const app = Fastify({ logger: true });
   registerHealth(app, "policy-service", { isReady: deps.isReady });

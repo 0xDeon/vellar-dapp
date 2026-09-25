@@ -76,7 +76,7 @@ describe("distributed tracing module (#301)", () => {
 
     const spans = TraceCollector.getInstance().getSpans(traceCtx.traceId);
     expect(spans.length).toBe(1);
-    expect(spans[0].status).toBe("error");
-    expect(spans[0].attributes.error).toBe("Deployment verification failed");
+    expect(spans[0]!.status).toBe("error");
+    expect(spans[0]!.attributes.error).toBe("Deployment verification failed");
   });
 });

@@ -17,9 +17,23 @@ describe("assertAttestorSafeForNetwork (M5 hard guard)", () => {
     ).toThrow(/single-key attestor/i);
   });
 
-  it("allows mainnet only with the explicit ALLOW_SINGLE_KEY_ATTESTOR override", () => {
+  it("allows mainnet only with the explicit ALLOW_SINGLE_KEY_ATTESTOR override in non-production", () => {
     expect(() =>
-      assertAttestorSafeForNetwork({ network: "mainnet", allowSingleKey: true }),
+      assertAttestorSafeForNetwork({
+        network: "mainnet",
+        allowSingleKey: true,
+        nodeEnv: "development",
+      }),
     ).not.toThrow();
+  });
+
+  it("HARD-GATES mainnet in production even if allowSingleKey is true (#422)", () => {
+    expect(() =>
+      assertAttestorSafeForNetwork({
+        network: "mainnet",
+        allowSingleKey: true,
+        nodeEnv: "production",
+      }),
+    ).toThrow(/escape hatch is hard-gated in production/i);
   });
 });

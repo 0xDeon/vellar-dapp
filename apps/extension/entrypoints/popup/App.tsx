@@ -92,6 +92,14 @@ function describeRequest(request: PendingApprovalSummary["request"]): RequestDes
       return {
         text: `wants you to sign a transaction on ${sanitizeString(request.params.network)}. Approving signs it with this device's key — review the site carefully.`,
       };
+    case "sign_auth_entry":
+      return {
+        text: `wants you to sign a Soroban authorization entry on ${sanitizeString(request.params.network)}. Approving signs it with this device's key — review the site carefully.`,
+      };
+    case "sign_message":
+      return {
+        text: `wants you to sign an off-chain message on ${sanitizeString(request.params.network)}. Approving signs it with this device's key.`,
+      };
     default:
       return { text: `sent a ${sanitizeString((request as { method: string }).method)} request.` };
   }
@@ -186,7 +194,10 @@ function ApprovalCard({
   onResolved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const isSign = approval.request.method === "sign_transaction";
+  const isSign =
+    approval.request.method === "sign_transaction" ||
+    approval.request.method === "sign_auth_entry" ||
+    approval.request.method === "sign_message";
   const desc = describeRequest(approval.request);
   const summary = useTxSummary(approval);
 
