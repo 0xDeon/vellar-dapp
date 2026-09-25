@@ -24,10 +24,17 @@ export default function Dashboard() {
   useEffect(() => {
     // Emit funnel completion event when dashboard mounts with active session
     if (session) {
+      const extSession = session as {
+        contractId?: string;
+        sessionId?: string;
+        accountId?: string;
+      };
       walletCreationEvents.funnelCompleted({
         network: session.network,
-        contractId: session.contractId,
-        sessionId: getAnalyticsTracker().hashValue(session.sessionId),
+        contractId: extSession.contractId ?? session.accountId ?? "",
+        sessionId: extSession.sessionId
+          ? getAnalyticsTracker().hashValue(extSession.sessionId)
+          : getAnalyticsTracker().hashValue(session.accountId ?? "unknown"),
       });
       void getAnalyticsTracker().flush();
     }
@@ -61,6 +68,7 @@ export default function Dashboard() {
             <SendPayment
               from={session.accountId}
               token={native}
+              availableTokens={balances.data}
               network={session.network}
               onSuccess={() => void balances.refetch()}
             />

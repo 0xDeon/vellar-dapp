@@ -14,25 +14,37 @@
 import type { Network } from "@vellar/service-kit";
 
 export class SingleKeyAttestorOnMainnetError extends Error {
-  constructor() {
+  constructor(message?: string) {
     super(
-      "Refusing to run the single-key attestor against a MAINNET attestation registry (M5): " +
-        "a single ATTESTOR_SECRET_KEY compromise forges provenance for any contract. Configure a " +
-        "multisig / smart-account attestor first, or set ALLOW_SINGLE_KEY_ATTESTOR=1 to explicitly " +
-        "accept the risk. See docs/security-audit.md (FIX 4).",
+      message ??
+        "Refusing to run the single-key attestor against a MAINNET attestation registry (M5): " +
+          "a single ATTESTOR_SECRET_KEY compromise forges provenance for any contract. Configure a " +
+          "multisig / smart-account attestor first, or set ALLOW_SINGLE_KEY_ATTESTOR=1 to explicitly " +
+          "accept the risk in non-production. See docs/security-audit.md (FIX 4).",
     );
     this.name = "SingleKeyAttestorOnMainnetError";
   }
 }
 
-/** Throws when a single-key attestor would be wired against mainnet without the
- * explicit override. Takes the resolved network directly (no passphrase
- * inference — RA-10). No-op on testnet. */
+/** Throws when a single-key attestor would be wired against mainnet.
+ * In production (`NODE_ENV === "production"`), the escape hatch is permanently hard-gated:
+ * single-key attestor is never permitted on mainnet under any circumstance.
+ * Outside production, it requires the explicit `allowSingleKey` override.
+ * No-op on testnet. */
 export function assertAttestorSafeForNetwork(opts: {
   network: Network;
   allowSingleKey: boolean;
+  nodeEnv?: string;
 }): void {
-  if (opts.network === "mainnet" && !opts.allowSingleKey) {
-    throw new SingleKeyAttestorOnMainnetError();
+  if (opts.network === "mainnet") {
+    const isProd = (opts.nodeEnv ?? process.env.NODE_ENV) === "production";
+    if (isProd) {
+      throw new SingleKeyAttestorOnMainnetError(
+        "Refusing single-key attestor on mainnet: escape hatch is hard-gated in production.",
+      );
+    }
+    if (!opts.allowSingleKey) {
+      throw new SingleKeyAttestorOnMainnetError();
+    }
   }
 }

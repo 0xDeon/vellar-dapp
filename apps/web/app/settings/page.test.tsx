@@ -18,6 +18,10 @@ vi.mock("@/lib/sessions", () => ({
   useSessions: useSessionsMock,
   useRevokeSession: () => ({ mutateAsync, isPending: false }),
 }));
+vi.mock("@/lib/agent-keys", () => ({
+  useAgentKeys: () => ({ data: [], isPending: false, isError: false }),
+  useRevokeAgentKey: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
 
 const walletSession: WalletSession = {
   accountId: "CACCOUNT",

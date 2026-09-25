@@ -15,6 +15,7 @@ members = [
     "policy-templates/token-spending-limit",
     "policy-templates/verified-recipient",
     "attestation-registry",
+    "threshold-attestor",
 ]
 
 [workspace.package]

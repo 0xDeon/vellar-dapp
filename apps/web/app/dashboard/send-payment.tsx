@@ -7,7 +7,6 @@ import { z } from "zod";
 import type { Network } from "@vellar/types";
 import {
   formatTokenAmount,
-  parseTokenAmount,
   type PreparedPayment,
   type TokenInfo,
 } from "vellar-sdk";
@@ -16,6 +15,11 @@ import { Eyebrow, LpActionButton } from "@/app/landing/ui";
 import { walletErrorMessage } from "@/lib/messages";
 import { trackTransaction } from "@/lib/track";
 import { usePaymentClient } from "@/lib/wallet-context";
+import {
+  getSupportedTokens,
+  parseAmountWithDecimals,
+  TESTNET_NATIVE_SAC,
+} from "@/lib/tokens";
 
 // Send flow (technical-doc.md §7.4): build -> explicit review -> passkey sign
 // -> submit -> track until final. Signing only ever happens from the review
@@ -37,18 +41,34 @@ type FlowState =
 
 export function SendPayment({
   from,
-  token,
+  token: initialToken,
+  availableTokens,
   network,
   onSuccess,
 }: {
   from: string;
-  token: TokenInfo;
+  token?: TokenInfo;
+  availableTokens?: TokenInfo[];
   network: Network;
   onSuccess: () => void;
 }) {
   const getPayments = usePaymentClient();
   const [flow, setFlow] = useState<FlowState>({ step: "form" });
   const [error, setError] = useState<string | null>(null);
+
+  const supported =
+    availableTokens && availableTokens.length > 0
+      ? availableTokens
+      : getSupportedTokens(network);
+
+  const [selectedToken, setSelectedToken] = useState<TokenInfo>(
+    initialToken ??
+      supported[0] ?? {
+        symbol: "XLM",
+        decimals: 7,
+        contractId: TESTNET_NATIVE_SAC,
+      },
+  );
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -58,12 +78,22 @@ export function SendPayment({
   async function prepare(values: FormValues) {
     setError(null);
     try {
-      const amount = parseTokenAmount(values.amount, token.decimals);
+      const amount = parseAmountWithDecimals(
+        values.amount,
+        selectedToken.decimals,
+      );
       const payments = await getPayments();
-      const prepared = await payments.preparePayment({ from, to: values.to, token, amount });
+      const prepared = await payments.preparePayment({
+        from,
+        to: values.to,
+        token: selectedToken,
+        amount,
+      });
       setFlow({ step: "review", prepared });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't prepare the payment.");
+      setError(
+        err instanceof Error ? err.message : "Couldn't prepare the payment.",
+      );
     }
   }
 
@@ -95,20 +125,45 @@ export function SendPayment({
         onSuccess();
       }
     } catch {
-      setError("The network hasn't confirmed the transaction yet. Check again shortly.");
+      setError(
+        "The network hasn't confirmed the transaction yet. Check again shortly.",
+      );
       setFlow({ step: "done", hash, result: "failed" });
     }
   }
 
   return (
     <section className="lpa-panel">
-      <Eyebrow>Send {token.symbol}</Eyebrow>
+      <Eyebrow>Send {selectedToken.symbol}</Eyebrow>
 
       {flow.step === "form" && (
         <form
           onSubmit={(e) => void form.handleSubmit(prepare)(e)}
           className="mt-3.5 flex flex-col gap-3"
         >
+          {supported.length > 1 && (
+            <label className="lpa-field">
+              <span className="flabel">Asset</span>
+              <select
+                aria-label="Select asset"
+                value={selectedToken.contractId}
+                onChange={(e) => {
+                  const match = supported.find(
+                    (t) => t.contractId === e.target.value,
+                  );
+                  if (match) setSelectedToken(match);
+                }}
+                className="w-full rounded border border-[var(--lp-border)] bg-[var(--lp-paper)] px-3 py-2 text-sm text-[var(--lp-ink)]"
+              >
+                {supported.map((t) => (
+                  <option key={t.contractId} value={t.contractId}>
+                    {t.symbol}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <label className="lpa-field">
             <span className="flabel">Recipient</span>
             <input {...form.register("to")} placeholder="G... or C..." />
@@ -117,10 +172,16 @@ export function SendPayment({
             )}
           </label>
           <label className="lpa-field">
-            <span className="flabel">Amount ({token.symbol})</span>
-            <input {...form.register("amount")} placeholder="0.0" inputMode="decimal" />
+            <span className="flabel">Amount ({selectedToken.symbol})</span>
+            <input
+              {...form.register("amount")}
+              placeholder="0.0"
+              inputMode="decimal"
+            />
             {form.formState.errors.amount && (
-              <span className="ferror">{form.formState.errors.amount.message}</span>
+              <span className="ferror">
+                {form.formState.errors.amount.message}
+              </span>
             )}
           </label>
           <LpActionButton
@@ -134,7 +195,11 @@ export function SendPayment({
       )}
 
       {(flow.step === "review" || flow.step === "submitting") && (
-        <div role="dialog" aria-label="Review payment" className="mt-3.5 flex flex-col gap-3">
+        <div
+          role="dialog"
+          aria-label="Review payment"
+          className="mt-3.5 flex flex-col gap-3"
+        >
           <span className="lpa-ok self-start text-[13px] font-bold">
             ✓ Review before signing — this cannot be undone
           </span>
@@ -152,6 +217,12 @@ export function SendPayment({
                 </dd>
               </div>
             ))}
+            <div className="flex justify-between gap-4">
+              <dt className="text-[var(--lp-ink-faint)]">Asset</dt>
+              <dd className="font-bold text-[var(--lp-ink)]">
+                {flow.prepared.review.token.symbol}
+              </dd>
+            </div>
             <div className="flex justify-between gap-4">
               <dt className="text-[var(--lp-ink-faint)]">Amount</dt>
               <dd className="lpa-amt text-xl">
@@ -188,14 +259,18 @@ export function SendPayment({
       {flow.step === "tracking" && (
         <p className="mt-3.5! animate-pulse text-sm text-[var(--lp-ink-soft)]">
           Confirming on the network…{" "}
-          <span className="break-all font-[family-name:var(--lp-mono)]">{flow.hash}</span>
+          <span className="break-all font-[family-name:var(--lp-mono)]">
+            {flow.hash}
+          </span>
         </p>
       )}
 
       {flow.step === "done" && (
         <div className="mt-3.5 flex flex-col gap-2 text-sm">
           <p className={flow.result === "success" ? "lpa-ok" : "lpa-bad"}>
-            {flow.result === "success" ? "Payment confirmed." : "Payment failed on the network."}
+            {flow.result === "success"
+              ? "Payment confirmed."
+              : "Payment failed on the network."}
           </p>
           <p className="break-all font-[family-name:var(--lp-mono)] text-xs text-[var(--lp-ink-faint)]">
             {flow.hash}
