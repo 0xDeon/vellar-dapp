@@ -289,6 +289,12 @@
                   },
                   {
                     "key": {
+                      "symbol": "publisher"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
                       "symbol": "wasm_hash"
                     },
                     "val": {
@@ -338,6 +344,12 @@
                     "val": {
                       "u32": 1000
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "publisher"
+                    },
+                    "val": "void"
                   },
                   {
                     "key": {
@@ -515,6 +527,18 @@
                       },
                       "val": {
                         "map": [
+                          {
+                            "key": {
+                              "symbol": "mode"
+                            },
+                            "val": {
+                              "vec": [
+                                {
+                                  "symbol": "Strict"
+                                }
+                              ]
+                            }
+                          },
                           {
                             "key": {
                               "symbol": "registry"

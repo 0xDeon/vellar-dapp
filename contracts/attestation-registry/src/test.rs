@@ -111,8 +111,20 @@ fn upsert_refreshes_existing_attestation() {
     let contract = Address::generate(&f.env);
     let now = f.env.ledger().sequence();
 
-    assert!(upsert_as(&f, &f.attestor, &contract, &wasm_hash(&f.env, 0x01), now + 100));
-    assert!(upsert_as(&f, &f.attestor, &contract, &wasm_hash(&f.env, 0x02), now + 5000));
+    assert!(upsert_as(
+        &f,
+        &f.attestor,
+        &contract,
+        &wasm_hash(&f.env, 0x01),
+        now + 100
+    ));
+    assert!(upsert_as(
+        &f,
+        &f.attestor,
+        &contract,
+        &wasm_hash(&f.env, 0x02),
+        now + 5000
+    ));
 
     let record = f.registry.attestation(&contract).unwrap();
     assert_eq!(record.wasm_hash, wasm_hash(&f.env, 0x02));
@@ -151,7 +163,13 @@ fn attestation_decays_to_unverified_at_expiry_without_revoke() {
     let now = f.env.ledger().sequence();
     let expires = now + 100;
 
-    assert!(upsert_as(&f, &f.attestor, &contract, &wasm_hash(&f.env, 0x01), expires));
+    assert!(upsert_as(
+        &f,
+        &f.attestor,
+        &contract,
+        &wasm_hash(&f.env, 0x01),
+        expires
+    ));
     assert!(f.registry.is_verified(&contract));
 
     // One ledger before expiry: still verified.
@@ -172,7 +190,13 @@ fn revoke_kills_attestation_immediately_and_is_idempotent() {
     let contract = Address::generate(&f.env);
     let now = f.env.ledger().sequence();
 
-    assert!(upsert_as(&f, &f.attestor, &contract, &wasm_hash(&f.env, 0x01), now + 1000));
+    assert!(upsert_as(
+        &f,
+        &f.attestor,
+        &contract,
+        &wasm_hash(&f.env, 0x01),
+        now + 1000
+    ));
     assert!(f.registry.is_verified(&contract));
 
     f.env.mock_all_auths();
@@ -192,7 +216,13 @@ fn non_attestor_cannot_revoke() {
     let contract = Address::generate(&f.env);
     let now = f.env.ledger().sequence();
 
-    assert!(upsert_as(&f, &f.attestor, &contract, &wasm_hash(&f.env, 0x01), now + 1000));
+    assert!(upsert_as(
+        &f,
+        &f.attestor,
+        &contract,
+        &wasm_hash(&f.env, 0x01),
+        now + 1000
+    ));
 
     let result = f
         .registry
@@ -217,12 +247,24 @@ fn reattestation_after_revoke_works() {
     let contract = Address::generate(&f.env);
     let now = f.env.ledger().sequence();
 
-    assert!(upsert_as(&f, &f.attestor, &contract, &wasm_hash(&f.env, 0x01), now + 1000));
+    assert!(upsert_as(
+        &f,
+        &f.attestor,
+        &contract,
+        &wasm_hash(&f.env, 0x01),
+        now + 1000
+    ));
     f.env.mock_all_auths();
     f.registry.revoke(&contract);
     assert!(!f.registry.is_verified(&contract));
 
-    assert!(upsert_as(&f, &f.attestor, &contract, &wasm_hash(&f.env, 0x02), now + 2000));
+    assert!(upsert_as(
+        &f,
+        &f.attestor,
+        &contract,
+        &wasm_hash(&f.env, 0x02),
+        now + 2000
+    ));
     assert!(f.registry.is_verified(&contract));
 }
 
@@ -276,4 +318,135 @@ fn non_attestor_cannot_rotate() {
 
     assert!(result.is_err());
     assert_eq!(f.registry.attestor(), f.attestor);
+}
+
+// ----- Publisher attribution (trusted-publishers policy mode) -----
+
+fn publisher_id(env: &Env, byte: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[byte; 32])
+}
+
+/// Invoke `upsert_with_publisher` with auth mocked for `signer` only.
+fn upsert_with_publisher_as(
+    f: &Fixture,
+    signer: &Address,
+    contract: &Address,
+    hash: &BytesN<32>,
+    publisher: &BytesN<32>,
+    expires: u32,
+) -> bool {
+    f.registry
+        .mock_auths(&[MockAuth {
+            address: signer,
+            invoke: &MockAuthInvoke {
+                contract: &f.registry.address,
+                fn_name: "upsert_with_publisher",
+                args: (contract.clone(), hash.clone(), publisher.clone(), expires).into_val(&f.env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_upsert_with_publisher(contract, hash, publisher, &expires)
+        .is_ok()
+}
+
+#[test]
+fn attributed_upsert_stores_publisher_and_is_verified() {
+    let f = setup();
+    let contract = Address::generate(&f.env);
+    let now = f.env.ledger().sequence();
+    let publisher = publisher_id(&f.env, 0x42);
+
+    assert!(upsert_with_publisher_as(
+        &f,
+        &f.attestor,
+        &contract,
+        &wasm_hash(&f.env, 0x01),
+        &publisher,
+        now + 1000
+    ));
+    assert!(f.registry.is_verified(&contract));
+    assert_eq!(f.registry.publisher_of(&contract), Some(publisher.clone()));
+    assert_eq!(
+        f.registry.attestation(&contract).unwrap().publisher,
+        Some(publisher)
+    );
+}
+
+#[test]
+fn unattributed_upsert_has_no_publisher() {
+    // Legacy `upsert` keeps working; the attestation is verified but never
+    // matches a trusted-publisher set.
+    let f = setup();
+    let contract = Address::generate(&f.env);
+    let now = f.env.ledger().sequence();
+    assert!(upsert_as(
+        &f,
+        &f.attestor,
+        &contract,
+        &wasm_hash(&f.env, 0x01),
+        now + 1000
+    ));
+    assert!(f.registry.is_verified(&contract));
+    assert_eq!(f.registry.publisher_of(&contract), None);
+}
+
+#[test]
+fn non_attestor_cannot_attribute() {
+    let f = setup();
+    let mallory = Address::generate(&f.env);
+    let contract = Address::generate(&f.env);
+    let now = f.env.ledger().sequence();
+    assert!(!upsert_with_publisher_as(
+        &f,
+        &mallory,
+        &contract,
+        &wasm_hash(&f.env, 0x01),
+        &publisher_id(&f.env, 0x42),
+        now + 1000
+    ));
+    assert_eq!(f.registry.publisher_of(&contract), None);
+}
+
+#[test]
+fn publisher_decays_with_the_attestation() {
+    // Attribution is only meaningful while the provenance claim is live.
+    let f = setup();
+    let contract = Address::generate(&f.env);
+    let now = f.env.ledger().sequence();
+    let expires = now + 100;
+    assert!(upsert_with_publisher_as(
+        &f,
+        &f.attestor,
+        &contract,
+        &wasm_hash(&f.env, 0x01),
+        &publisher_id(&f.env, 0x42),
+        expires
+    ));
+    assert!(f.registry.publisher_of(&contract).is_some());
+    f.env.ledger().with_mut(|l| l.sequence_number = expires);
+    assert_eq!(f.registry.publisher_of(&contract), None);
+}
+
+#[test]
+fn revoke_clears_publisher_and_reupsert_without_publisher_drops_attribution() {
+    let f = setup();
+    let contract = Address::generate(&f.env);
+    let now = f.env.ledger().sequence();
+    assert!(upsert_with_publisher_as(
+        &f,
+        &f.attestor,
+        &contract,
+        &wasm_hash(&f.env, 0x01),
+        &publisher_id(&f.env, 0x42),
+        now + 1000
+    ));
+    f.env.mock_all_auths();
+    f.registry.revoke(&contract);
+    assert_eq!(f.registry.publisher_of(&contract), None);
+
+    // A later unattributed re-attestation must not resurrect the old publisher.
+    f.registry
+        .upsert(&contract, &wasm_hash(&f.env, 0x02), &(now + 2000));
+    assert!(f.registry.is_verified(&contract));
+    assert_eq!(f.registry.publisher_of(&contract), None);
 }

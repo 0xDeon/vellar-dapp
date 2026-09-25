@@ -1,5 +1,6 @@
 //! VELA configurable spending-limit policy: a CUMULATIVE rolling-window
-//! allowance whose cap and window are set PER INSTANCE at deploy time.
+//! allowance whose cap and window are set PER INSTANCE at deploy time, plus
+//! optional on-chain SAFETY RULES over the transfer patterns it recognizes.
 //!
 //! This is a hardened, configurable derivative of the passkey-kit
 //! `sample-policy` reference. It preserves every security invariant of that
@@ -8,6 +9,35 @@
 //! configuration supplied to `__constructor`, so a user can choose their own
 //! spending limit from the VELA policy builder and deploy an instance that
 //! enforces THAT number.
+//!
+//! ## Safety rules (on-chain spending controls for KNOWN transfer patterns)
+//!
+//! Beyond the cumulative allowance, an instance carries an immutable
+//! [`SafetyRules`] set, evaluated inside `policy__` (i.e. inside the wallet's
+//! `__check_auth`) so a violating transfer is REJECTED on-chain rather than
+//! warned about in a UI:
+//!
+//! - **Per-token maximum single transfer** — `max_single_transfer` maps a
+//!   token contract to the largest amount (in THAT token's base units) any one
+//!   `transfer` context may move. Denominated per token because there is no
+//!   price oracle on Soroban: a cap is meaningful only in the units of the
+//!   token it applies to. Never USD.
+//! - **Token allowlist** — `allowed_tokens`, when set, restricts which SEP-41
+//!   token contracts this policy will authorize transfers of. `None` keeps the
+//!   original "any SEP-41 transfer" behavior.
+//!
+//! Both rule tables are BOUNDED ([`MAX_RULE_ENTRIES`]) and the number of auth
+//! contexts evaluated per call is BOUNDED ([`MAX_CONTEXTS`]), so the work done
+//! in `__check_auth` is predictable — this matters because x402 facilitators
+//! re-simulate payments, executing this code repeatedly.
+//!
+//! **Scope, stated honestly:** the rules understand exactly one transfer
+//! pattern — a SEP-41 `transfer(from, to, amount)` where `from` is the bound
+//! wallet — and deny everything else. They are spending controls for that
+//! known pattern, not a universal transaction firewall: a contract call that
+//! moves value through some other path is simply not authorized by this policy
+//! at all (deny-by-default), and value the wallet moves through OTHER signers
+//! is outside this policy's view.
 //!
 //! ## Why the limit is a cumulative window, not a per-transfer cap
 //!
@@ -25,14 +55,32 @@
 //! window and AT MOST `2 * daily_limit` across any boundary. This is intentional
 //! and TESTED (see `test.rs` boundary test): treat this as a spending guardrail,
 //! not a hard cap. For a hard guarantee, pair it — via the granting signer's
-//! `SignerLimits` — with an authenticated cryptographic co-signer.
+//! `SignerLimits` — with an authenticated cryptographic co-signer. The
+//! `max_single_transfer` rule is a per-context ceiling ON TOP of the cumulative
+//! window, never a replacement for it.
+//!
+//! ## Explicit `auth_contexts` parsing
+//!
+//! Every context is parsed field by field: it must be a contract invocation,
+//! must not target the wallet's own admin surface, must be `transfer`, must
+//! carry exactly `(from: Address, to: Address, amount: i128)`, and `from` MUST
+//! be the bound wallet. A context whose `from` is any other address is a
+//! mismatched authorization context and is rejected — the policy never
+//! rubber-stamps a shape it does not fully understand.
+//!
+//! ## Re-simulation safety
+//!
+//! `policy__` is deterministic in (ledger timestamp, stored allowance,
+//! contexts). Simulation runs it against a read-only snapshot, so repeated
+//! dry-runs neither consume budget nor change the verdict; only an applied
+//! transaction advances `spent`. `test.rs` pins this with ledger snapshots.
 //!
 //! ## Immutable configuration (deploy-once)
 //!
 //! Config is written once in `__constructor` and NEVER mutated afterwards.
 //! There is deliberately no setter: if the wallet owner could raise their own
-//! cap in-place, the policy would guarantee nothing. Changing a limit means
-//! deploying a fresh instance and re-attaching it with a passkey approval
+//! cap in-place, the policy would guarantee nothing. Changing a limit or a rule
+//! means deploying a fresh instance and re-attaching it with a passkey approval
 //! (`kit.updatePolicy`), which is an explicit, auditable admin action.
 //!
 //! ## Single-tenant binding
@@ -55,7 +103,7 @@ use smart_wallet_interface::{types::SignerKey, PolicyInterface, SmartWalletClien
 use soroban_sdk::{
     auth::{Context, ContractContext},
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, TryFromVal, Vec,
+    Env, Map, TryFromVal, Vec,
 };
 
 #[contracterror]
@@ -75,6 +123,18 @@ pub enum PolicyError {
     /// `install`/`policy__` was called by a wallet other than the one this
     /// instance was configured (bound) for at deploy time.
     WrongWallet = 5,
+    /// A transfer context targets a token that is not on the instance's
+    /// `allowed_tokens` allowlist.
+    TokenNotAllowed = 6,
+    /// A single transfer context exceeds the per-token `max_single_transfer`
+    /// ceiling for its token.
+    SingleTransferExceeded = 7,
+    /// A transfer context's `from` argument is not the bound wallet: the
+    /// authorization context does not match what this policy governs.
+    ContextMismatch = 8,
+    /// More auth contexts than `MAX_CONTEXTS` were supplied; the policy
+    /// refuses unbounded work.
+    TooManyContexts = 9,
 }
 
 /// Bounds on the configurable window. A non-positive allowance or a zero
@@ -85,6 +145,17 @@ pub enum PolicyError {
 const MIN_ALLOWANCE: i128 = 1;
 const MIN_WINDOW_SECONDS: u64 = 1;
 const MAX_WINDOW_SECONDS: u64 = 60 * 60 * 24 * 365;
+
+/// Upper bound on entries in each safety-rule table. Keeps the per-context
+/// lookups inside `__check_auth` O(MAX_RULE_ENTRIES) and the instance config
+/// small. Eight tokens is far more than any budgeted signer needs.
+pub const MAX_RULE_ENTRIES: u32 = 8;
+
+/// Upper bound on auth contexts evaluated per `policy__` call. The smart
+/// wallet passes the full context list of one authorization; a legitimate
+/// payment has one (occasionally a few) transfer contexts. Anything larger is
+/// refused outright so the work here stays bounded under re-simulation.
+pub const MAX_CONTEXTS: u32 = 16;
 
 /// TTL renewal parameters (in ledgers at the historical 5s close time): bump
 /// to ~30 days whenever remaining TTL drops below ~1 week. Both are well under
@@ -103,16 +174,37 @@ pub enum StorageKey {
     Spend(Address),
 }
 
+/// Immutable safety rules over the recognized transfer pattern. Every amount
+/// is in the base units of the token it is keyed by — never a fiat value.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SafetyRules {
+    /// token contract → largest amount (base units) a SINGLE transfer of that
+    /// token may move. Tokens absent from the map have no per-transfer
+    /// ceiling (the cumulative window still applies). At most
+    /// `MAX_RULE_ENTRIES` entries; every cap must be >= 1.
+    pub max_single_transfer: Map<Address, i128>,
+    /// When `Some`, ONLY transfers of these token contracts are authorized;
+    /// any other token fails closed with `TokenNotAllowed`. `None` = any
+    /// SEP-41 token (the original behavior). `Some` must hold between 1 and
+    /// `MAX_RULE_ENTRIES` entries — an empty allowlist is a misconfiguration
+    /// (it would authorize nothing) and is rejected at construction.
+    pub allowed_tokens: Option<Vec<Address>>,
+}
+
 /// Immutable configuration set at deploy time.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     /// The single wallet this instance is bound to.
     pub wallet: Address,
-    /// Cumulative amount (in stroops) this policy authorizes per window.
+    /// Cumulative amount (in stroops / base units) this policy authorizes per
+    /// window, summed across every authorized transfer regardless of token.
     pub daily_limit: i128,
     /// Rolling-window length in seconds.
     pub window_seconds: u64,
+    /// Safety rules over the recognized transfer pattern.
+    pub rules: SafetyRules,
 }
 
 /// Per-wallet cumulative-spend accounting for the current window.
@@ -123,26 +215,42 @@ pub struct Allowance {
     pub spent: i128,
 }
 
+/// A fully parsed, validated transfer context. Only contexts that decode to
+/// this shape are ever counted or authorized.
+struct ParsedTransfer {
+    token: Address,
+    amount: i128,
+}
+
 #[contract]
 pub struct Contract;
 
 #[contractimpl]
 impl Contract {
     /// Deploy-time configuration. Runs exactly once (CAP-0058 constructor);
-    /// there is no other path to write `Config`, so the limit and window are
-    /// immutable for the life of the instance.
+    /// there is no other path to write `Config`, so the limit, window and
+    /// rules are immutable for the life of the instance.
     ///
     /// `wallet` is the account this instance will be attached to; `install`
     /// and `policy__` reject any other wallet. `daily_limit` is the cumulative
-    /// window allowance in stroops; `window_seconds` is the rolling-window
-    /// length. Both are range-checked.
-    pub fn __constructor(env: Env, wallet: Address, daily_limit: i128, window_seconds: u64) {
+    /// window allowance in base units; `window_seconds` is the rolling-window
+    /// length. `rules` are the safety rules described in the module docs. All
+    /// values are range-checked; an out-of-range rule table fails the deploy
+    /// rather than silently shipping a policy that means something else.
+    pub fn __constructor(
+        env: Env,
+        wallet: Address,
+        daily_limit: i128,
+        window_seconds: u64,
+        rules: SafetyRules,
+    ) {
         if daily_limit < MIN_ALLOWANCE {
             panic_with_error!(&env, PolicyError::InvalidConfig);
         }
         if window_seconds < MIN_WINDOW_SECONDS || window_seconds > MAX_WINDOW_SECONDS {
             panic_with_error!(&env, PolicyError::InvalidConfig);
         }
+        validate_rules(&env, &wallet, &rules);
 
         env.storage().instance().set::<StorageKey, Config>(
             &StorageKey::Config,
@@ -150,14 +258,15 @@ impl Contract {
                 wallet,
                 daily_limit,
                 window_seconds,
+                rules,
             },
         );
 
         renew_instance(&env);
     }
 
-    /// Read the immutable configuration (limit, window, bound wallet). A
-    /// read-only view for clients and tests; no auth required.
+    /// Read the immutable configuration (limit, window, rules, bound wallet).
+    /// A read-only view for clients and tests; no auth required.
     pub fn config(env: Env) -> Config {
         load_config(&env)
     }
@@ -227,46 +336,28 @@ impl PolicyInterface for Contract {
             panic_with_error!(&env, PolicyError::NotInstalled);
         }
 
-        // Deny-by-default. Sum the transfer amounts across all contexts in
-        // this invocation; anything not explicitly permitted rejects.
+        // Bounded work: an empty authorization authorizes nothing (refuse
+        // rather than rubber-stamp a vacuous auth), and an oversized one is
+        // refused outright rather than iterated.
+        if contexts.is_empty() {
+            panic_with_error!(&env, PolicyError::NotAllowed);
+        }
+        if contexts.len() > MAX_CONTEXTS {
+            panic_with_error!(&env, PolicyError::TooManyContexts);
+        }
+
+        // Deny-by-default. Parse every context explicitly, apply the safety
+        // rules per context, and sum the amounts across the invocation;
+        // anything not explicitly permitted rejects.
         let mut total: i128 = 0;
         for context in contexts.iter() {
-            match context {
-                Context::Contract(ContractContext {
-                    contract,
-                    fn_name,
-                    args,
-                }) => {
-                    // Never authorize the wallet's own admin surface
-                    // (add/update/remove/upgrade). `source` is the wallet.
-                    if contract == source {
-                        panic_with_error!(&env, PolicyError::NotAllowed);
-                    }
+            let transfer = parse_transfer(&env, &source, &context);
+            apply_rules(&env, &config.rules, &transfer);
 
-                    // Only `transfer` is permitted.
-                    if fn_name != symbol_short!("transfer") {
-                        panic_with_error!(&env, PolicyError::NotAllowed);
-                    }
-
-                    // Fail closed if the amount argument is missing or not an
-                    // i128. (SEP-41 transfer: from, to, amount.)
-                    let amount = match args.get(2).and_then(|v| i128::try_from_val(&env, &v).ok()) {
-                        Some(amount) => amount,
-                        None => panic_with_error!(&env, PolicyError::NotAllowed),
-                    };
-
-                    if amount <= 0 {
-                        panic_with_error!(&env, PolicyError::NotAllowed);
-                    }
-
-                    total = match total.checked_add(amount) {
-                        Some(total) => total,
-                        None => panic_with_error!(&env, PolicyError::NotAllowed),
-                    };
-                }
-                // Non-contract contexts (deploys, etc.) are never permitted.
-                _ => panic_with_error!(&env, PolicyError::NotAllowed),
-            }
+            total = match total.checked_add(transfer.amount) {
+                Some(total) => total,
+                None => panic_with_error!(&env, PolicyError::NotAllowed),
+            };
         }
 
         // Cumulative rolling-window allowance. Load the wallet's spend record,
@@ -307,6 +398,116 @@ impl PolicyInterface for Contract {
         renew_instance(&env);
         renew_persistent(&env, &installed_key);
         renew_persistent(&env, &spend_key);
+    }
+}
+
+/// Range-check the rule tables at construction. Oversized tables are refused
+/// (bounded work); a zero/negative single-transfer cap or an empty allowlist
+/// would authorize nothing and is treated as a misconfiguration.
+fn validate_rules(env: &Env, wallet: &Address, rules: &SafetyRules) {
+    if rules.max_single_transfer.len() > MAX_RULE_ENTRIES {
+        panic_with_error!(env, PolicyError::InvalidConfig);
+    }
+    for (token, cap) in rules.max_single_transfer.iter() {
+        if cap < MIN_ALLOWANCE || token == *wallet {
+            panic_with_error!(env, PolicyError::InvalidConfig);
+        }
+    }
+    if let Some(tokens) = &rules.allowed_tokens {
+        if tokens.is_empty() || tokens.len() > MAX_RULE_ENTRIES {
+            panic_with_error!(env, PolicyError::InvalidConfig);
+        }
+        for token in tokens.iter() {
+            if token == *wallet {
+                panic_with_error!(env, PolicyError::InvalidConfig);
+            }
+        }
+    }
+}
+
+/// Explicitly parse one auth context into the single transfer pattern this
+/// policy understands, failing closed on any deviation.
+fn parse_transfer(env: &Env, source: &Address, context: &Context) -> ParsedTransfer {
+    let Context::Contract(ContractContext {
+        contract,
+        fn_name,
+        args,
+    }) = context
+    else {
+        // Non-contract contexts (deploys, etc.) are never permitted.
+        panic_with_error!(env, PolicyError::NotAllowed)
+    };
+
+    // Never authorize the wallet's own admin surface
+    // (add/update/remove/upgrade). `source` is the wallet.
+    if *contract == *source {
+        panic_with_error!(env, PolicyError::NotAllowed);
+    }
+
+    // Only `transfer` is permitted.
+    if *fn_name != symbol_short!("transfer") {
+        panic_with_error!(env, PolicyError::NotAllowed);
+    }
+
+    // SEP-41 transfer: exactly (from, to, amount). Fail closed on any other
+    // arity — an extra or missing argument is not a shape we understand.
+    if args.len() != 3 {
+        panic_with_error!(env, PolicyError::NotAllowed);
+    }
+
+    // `from` MUST be the bound wallet: this policy only ever authorizes the
+    // wallet spending its own funds. Any other `from` is a mismatched context.
+    let from = match args
+        .get(0)
+        .and_then(|v| Address::try_from_val(env, &v).ok())
+    {
+        Some(from) => from,
+        None => panic_with_error!(env, PolicyError::NotAllowed),
+    };
+    if from != *source {
+        panic_with_error!(env, PolicyError::ContextMismatch);
+    }
+
+    // `to` must decode as an address; a transfer to the wallet itself moves
+    // nothing and is refused rather than counted against the budget.
+    let to = match args
+        .get(1)
+        .and_then(|v| Address::try_from_val(env, &v).ok())
+    {
+        Some(to) => to,
+        None => panic_with_error!(env, PolicyError::NotAllowed),
+    };
+    if to == *source {
+        panic_with_error!(env, PolicyError::NotAllowed);
+    }
+
+    // Fail closed if the amount argument is not a positive i128.
+    let amount = match args.get(2).and_then(|v| i128::try_from_val(env, &v).ok()) {
+        Some(amount) => amount,
+        None => panic_with_error!(env, PolicyError::NotAllowed),
+    };
+    if amount <= 0 {
+        panic_with_error!(env, PolicyError::NotAllowed);
+    }
+
+    ParsedTransfer {
+        token: contract.clone(),
+        amount,
+    }
+}
+
+/// Apply the per-context safety rules. Both lookups are bounded by
+/// `MAX_RULE_ENTRIES`.
+fn apply_rules(env: &Env, rules: &SafetyRules, transfer: &ParsedTransfer) {
+    if let Some(tokens) = &rules.allowed_tokens {
+        if !tokens.contains(&transfer.token) {
+            panic_with_error!(env, PolicyError::TokenNotAllowed);
+        }
+    }
+    if let Some(cap) = rules.max_single_transfer.get(transfer.token.clone()) {
+        if transfer.amount > cap {
+            panic_with_error!(env, PolicyError::SingleTransferExceeded);
+        }
     }
 }
 

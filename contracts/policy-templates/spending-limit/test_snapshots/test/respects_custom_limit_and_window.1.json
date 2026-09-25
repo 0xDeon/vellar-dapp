@@ -392,6 +392,29 @@
                           },
                           {
                             "key": {
+                              "symbol": "rules"
+                            },
+                            "val": {
+                              "map": [
+                                {
+                                  "key": {
+                                    "symbol": "allowed_tokens"
+                                  },
+                                  "val": "void"
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "max_single_transfer"
+                                  },
+                                  "val": {
+                                    "map": []
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "wallet"
                             },
                             "val": {

@@ -115,6 +115,18 @@
                         "map": [
                           {
                             "key": {
+                              "symbol": "mode"
+                            },
+                            "val": {
+                              "vec": [
+                                {
+                                  "symbol": "Strict"
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "registry"
                             },
                             "val": {

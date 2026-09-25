@@ -126,6 +126,12 @@
                   },
                   {
                     "key": {
+                      "symbol": "publisher"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
                       "symbol": "wasm_hash"
                     },
                     "val": {

@@ -42,6 +42,18 @@
 //! attestor address, one persistent record per attested contract. Worst-case
 //! compromise of the attestor key mis-labels provenance; it cannot move value.
 //! The attestor is rotatable (`set_attestor`) by the current attestor.
+//!
+//! ## Publisher attribution (trusted-publishers policy mode)
+//!
+//! An attestation may carry a `publisher` id: a 32-byte identifier of WHO the
+//! verified source is attributed to, derived off-chain by the attestor from the
+//! verification record's canonical source location (e.g. `sha256` of the
+//! lower-cased `github.com/<owner>`). The verified-recipient policy's
+//! trusted-publishers mode consults it through `publisher_of`, which answers
+//! only while the attestation is live — provenance and attribution expire
+//! together. `upsert` (no publisher) is kept for attestors that cannot
+//! attribute; such attestations are verified but unattributed and never match
+//! a trusted-publisher set (deny-by-default).
 
 #![no_std]
 
@@ -98,6 +110,9 @@ pub struct Attestation {
     pub attested_ledger: u32,
     /// First ledger at which this attestation is no longer valid.
     pub expires_ledger: u32,
+    /// Off-chain-derived publisher identifier the verified source is attributed
+    /// to, if the attestor supplied one. `None` = verified but unattributed.
+    pub publisher: Option<BytesN<32>>,
 }
 
 #[contract]
@@ -122,34 +137,20 @@ impl Contract {
     /// expiry, so a live attestation can never be archived out from under a
     /// reader.
     pub fn upsert(env: Env, contract: Address, wasm_hash: BytesN<32>, expires_ledger: u32) {
-        load_attestor(&env).require_auth();
+        write_attestation(&env, contract, wasm_hash, expires_ledger, None);
+    }
 
-        let now = env.ledger().sequence();
-        if expires_ledger <= now || expires_ledger - now > MAX_ATTESTATION_LEDGERS {
-            panic_with_error!(&env, RegistryError::InvalidExpiry);
-        }
-
-        let key = StorageKey::Attestation(contract.clone());
-        env.storage().persistent().set::<StorageKey, Attestation>(
-            &key,
-            &Attestation {
-                wasm_hash: wasm_hash.clone(),
-                attested_ledger: now,
-                expires_ledger,
-            },
-        );
-
-        // Keep the record readable for at least its logical lifetime + buffer.
-        let live_for = expires_ledger - now + TTL_BUFFER;
-        env.storage()
-            .persistent()
-            .extend_ttl::<StorageKey>(&key, live_for, live_for);
-        renew_instance(&env);
-
-        env.events().publish(
-            (symbol_short!("attest"), contract),
-            (wasm_hash, expires_ledger),
-        );
+    /// Write or refresh the attestation for `contract` WITH publisher
+    /// attribution. Attestor-only; same expiry rules as `upsert`. Replaces any
+    /// prior (attributed or not) attestation for the contract.
+    pub fn upsert_with_publisher(
+        env: Env,
+        contract: Address,
+        wasm_hash: BytesN<32>,
+        publisher: BytesN<32>,
+        expires_ledger: u32,
+    ) {
+        write_attestation(&env, contract, wasm_hash, expires_ledger, Some(publisher));
     }
 
     /// Remove the attestation for `contract` immediately. Attestor-only.
@@ -163,7 +164,8 @@ impl Contract {
             .remove::<StorageKey>(&StorageKey::Attestation(contract.clone()));
         renew_instance(&env);
 
-        env.events().publish((symbol_short!("revoke"), contract), ());
+        env.events()
+            .publish((symbol_short!("revoke"), contract), ());
     }
 
     /// Rotate the attestor key. Current-attestor auth.
@@ -194,6 +196,24 @@ impl Contract {
         }
     }
 
+    /// The publisher a LIVE attestation for `contract` is attributed to, or
+    /// `None` when the contract is unverified, its attestation has expired, or
+    /// it was attested without attribution. One persistent read + a ledger
+    /// compare — the trusted-publishers policy mode calls this inside
+    /// `__check_auth`, so it stays as cheap as `is_verified`. No auth required.
+    pub fn publisher_of(env: Env, contract: Address) -> Option<BytesN<32>> {
+        match env
+            .storage()
+            .persistent()
+            .get::<StorageKey, Attestation>(&StorageKey::Attestation(contract))
+        {
+            Some(attestation) if env.ledger().sequence() < attestation.expires_ledger => {
+                attestation.publisher
+            }
+            _ => None,
+        }
+    }
+
     /// Full attestation record for `contract`, if one exists (live OR logically
     /// expired-but-unarchived). Read-only view for off-chain consumers that
     /// want the attested wasm hash to compare against the live one; on-chain
@@ -208,6 +228,44 @@ impl Contract {
     pub fn attestor(env: Env) -> Address {
         load_attestor(&env)
     }
+}
+
+fn write_attestation(
+    env: &Env,
+    contract: Address,
+    wasm_hash: BytesN<32>,
+    expires_ledger: u32,
+    publisher: Option<BytesN<32>>,
+) {
+    load_attestor(env).require_auth();
+
+    let now = env.ledger().sequence();
+    if expires_ledger <= now || expires_ledger - now > MAX_ATTESTATION_LEDGERS {
+        panic_with_error!(env, RegistryError::InvalidExpiry);
+    }
+
+    let key = StorageKey::Attestation(contract.clone());
+    env.storage().persistent().set::<StorageKey, Attestation>(
+        &key,
+        &Attestation {
+            wasm_hash: wasm_hash.clone(),
+            attested_ledger: now,
+            expires_ledger,
+            publisher,
+        },
+    );
+
+    // Keep the record readable for at least its logical lifetime + buffer.
+    let live_for = expires_ledger - now + TTL_BUFFER;
+    env.storage()
+        .persistent()
+        .extend_ttl::<StorageKey>(&key, live_for, live_for);
+    renew_instance(env);
+
+    env.events().publish(
+        (symbol_short!("attest"), contract),
+        (wasm_hash, expires_ledger),
+    );
 }
 
 fn load_attestor(env: &Env) -> Address {
