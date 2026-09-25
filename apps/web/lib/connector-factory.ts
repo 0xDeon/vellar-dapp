@@ -10,6 +10,8 @@ import {
 import { walletConfig } from "./config";
 import { createHttpWalletBackend } from "./http-backend";
 import { createPolicySignerActions } from "./policy-signer";
+import { createSignerActions, type AddAgentKeyInput } from "./signer-actions";
+import type { RawSigner, SignerKeyRef } from "./signer-model";
 
 // Builds the real PasskeyKit-backed wallet runtime. The connector and the
 // payment client MUST share one PasskeyKit instance — the connected passkey's
@@ -47,6 +49,34 @@ export interface WalletRuntime {
    * policy (security-audit.md V3 / FIX 5). Returns the tx hash.
    */
   detachPolicy(policyContractId: string): Promise<{ hash: string }>;
+  /**
+   * The account's signer set as the chain has it (#401): enumerated through
+   * passkey-kit's hosted signer indexer (an index of the wallet's own
+   * SignerAdded/SignerRemoved events), then every non-removed entry is
+   * CONFIRMED with a direct ledger read (`kit.getSigner`) so a stale index can
+   * neither hide a live signer nor show a revoked one as live. Requires a
+   * connected/resumed kit.
+   */
+  listSigners(accountId: string): Promise<RawSigner[]>;
+  /**
+   * Add a second passkey (#401): browser registration ceremony for the NEW
+   * credential, then the EXISTING passkey signs the wallet's add_signer for it
+   * (Persistent, unlimited, non-expiring — a full admin peer, i.e. a recovery
+   * passkey). Returns the tx hash and the new credential id.
+   */
+  addPasskeySigner(label: string): Promise<{ hash: string; keyId: string }>;
+  /**
+   * Mint an agent session key (#394): passkey-signed addEd25519 whose
+   * SignerLimits name the token-budget policy as a REQUIRED co-signer, so the
+   * chain — not this client — bounds what the key can spend.
+   */
+  addAgentKey(input: AddAgentKeyInput): Promise<{ hash: string }>;
+  /**
+   * On-chain removal of any signer (#401): passkey-signed remove_signer. The
+   * wallet contract itself refuses to remove the last durable admin signer
+   * (LastAdminSigner / LastSigner), which is the lockout guard of record.
+   */
+  removeSigner(key: SignerKeyRef): Promise<{ hash: string }>;
 }
 
 /** 7 days — the device-signer session length. The contract stores the
@@ -125,7 +155,74 @@ export function getWalletRuntime(): Promise<WalletRuntime> {
         const { SignerKey, SignerStore } = await import("passkey-kit");
         return policySignerActions({ SignerKey, SignerStore }).detachPolicy(policyContractId);
       },
+      async listSigners(accountId) {
+        const { MercuryIndexer, SignerKey } = await import("passkey-kit");
+        const indexer = MercuryIndexer.forNetwork({ rpc: kit.rpc }, config.networkPassphrase);
+        if (!indexer) throw new Error("No signer indexer is available for this network.");
+        const indexed = await indexer.getSigners(accountId);
+        // Confirm against the ledger: the indexer says what WAS added; the
+        // ledger says what IS there now.
+        const confirmed: RawSigner[] = [];
+        for (const signer of indexed.slice(0, MAX_SIGNERS_CONFIRMED)) {
+          if (signer.status === "removed") continue;
+          const live = await kit.getSigner(signerKeyFrom(SignerKey, signer.key));
+          if (live === null) continue;
+          confirmed.push({
+            key: { key: signer.key.key, value: signer.key.value },
+            expiration: signer.expiration,
+            limits: signer.limits,
+            storage: signer.storage,
+            status: signer.status,
+          });
+        }
+        return confirmed;
+      },
+      async addPasskeySigner(label) {
+        const { SignerKey, SignerStore } = await import("passkey-kit");
+        return signerActions({ SignerKey, SignerStore }).addPasskeySigner(label);
+      },
+      async addAgentKey(input) {
+        const { SignerKey, SignerStore } = await import("passkey-kit");
+        return signerActions({ SignerKey, SignerStore }).addAgentKey(input);
+      },
+      async removeSigner(key) {
+        const { SignerKey, SignerStore } = await import("passkey-kit");
+        return signerActions({ SignerKey, SignerStore }).removeSigner(key);
+      },
     };
+
+    /** Bind the extracted signer actions (signer-actions.ts) to this
+     * runtime's kit + backend + network. Same RA-6 rationale as policy
+     * actions: the exact kit calls are unit-tested with a fake kit. */
+    function signerActions(enums: {
+      SignerKey: Parameters<typeof createSignerActions>[0]["SignerKey"];
+      SignerStore: { Persistent: unknown; Temporary: unknown };
+    }) {
+      return createSignerActions({
+        kit: {
+          createKey: async (appName, userName) => {
+            const created = await kit.createKey(appName, userName);
+            return { keyId: created.keyId, publicKey: created.publicKey };
+          },
+          addSecp256r1: (keyId, publicKey, limits, store, expiration) =>
+            kit.addSecp256r1(keyId, publicKey, limits, store as SignerStoreValue, expiration),
+          addEd25519: (publicKey, limits, store, expiration) =>
+            kit.addEd25519(
+              publicKey,
+              limits as SignerLimitsValue,
+              store as SignerStoreValue,
+              expiration,
+            ),
+          remove: (signerKey) => kit.remove(signerKey as SignerKeyValue),
+          sign: (tx) => kit.sign(tx as never),
+        },
+        backend,
+        network: config.network,
+        appName: config.appName,
+        SignerKey: enums.SignerKey,
+        SignerStore: enums.SignerStore,
+      });
+    }
 
     /** Bind the extracted actions to this runtime's kit + backend + network,
      * given the lazily-imported passkey-kit enums. */
@@ -143,6 +240,28 @@ export function getWalletRuntime(): Promise<WalletRuntime> {
     }
   })();
   return runtimePromise;
+}
+
+/** Upper bound on indexer rows confirmed per listing (one ledger read each). */
+const MAX_SIGNERS_CONFIRMED = 64;
+
+type SignerStoreValue = Parameters<import("passkey-kit").PasskeyKit["addEd25519"]>[2];
+type SignerLimitsValue = Parameters<import("passkey-kit").PasskeyKit["addEd25519"]>[1];
+type SignerKeyValue = Parameters<import("passkey-kit").PasskeyKit["remove"]>[0];
+
+/** Rebuild a passkey-kit SignerKey from the indexer's {key,value} view. */
+function signerKeyFrom(
+  SignerKey: typeof import("passkey-kit").SignerKey,
+  key: { key: "Policy" | "Ed25519" | "Secp256r1"; value: string },
+) {
+  switch (key.key) {
+    case "Policy":
+      return SignerKey.Policy(key.value);
+    case "Ed25519":
+      return SignerKey.Ed25519(key.value);
+    case "Secp256r1":
+      return SignerKey.Secp256r1(key.value);
+  }
 }
 
 export function createRealConnector(): Promise<WalletConnector> {

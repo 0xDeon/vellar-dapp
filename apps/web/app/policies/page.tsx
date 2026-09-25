@@ -31,6 +31,13 @@ type Stage =
   | { name: "configure"; template: PolicyTemplateInfo }
   | { name: "review"; template: PolicyTemplateInfo; policy: GeneratedPolicy };
 
+/** Decimal token amount (7 decimals, the SAC precision) → integer base units. */
+export function xlmToBaseUnits(value: string): string {
+  const [whole = "0", frac = ""] = value.split(".");
+  if (!/^\d+$/.test(whole) || !/^\d{0,7}$/.test(frac)) return value;
+  return (BigInt(whole) * 10_000_000n + BigInt((frac + "0000000").slice(0, 7))).toString();
+}
+
 // Feature flag gating the policy builder's gradual rollout (#335 —
 // docs/decisions.md records the flag name and rollout plan). Read once at
 // module load: the env vars it's built from are inlined at Next.js build
@@ -194,8 +201,17 @@ function ConfigureForm({
   const [dailyXlm, setDailyXlm] = useState("");
   const [perTxXlm, setPerTxXlm] = useState("");
   const [allowlist, setAllowlist] = useState("");
+  // #399 safety rules (spending_limit): token-denominated, never fiat.
+  const [capToken, setCapToken] = useState("");
+  const [capXlm, setCapXlm] = useState("");
+  const [allowedTokens, setAllowedTokens] = useState("");
+  // #398 provenance mode (verified_only).
+  const [provenanceMode, setProvenanceMode] = useState<"strict" | "trusted_publishers">("strict");
+  const [trustedPublishers, setTrustedPublishers] = useState("");
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
+
+  const splitList = (raw: string) => raw.split(/[\s,]+/).filter(Boolean);
 
   function buildDefinition(): PolicyDefinition {
     const owners = [owner, ...coOwners.split(/[\s,]+/).filter(Boolean)];
@@ -209,7 +225,19 @@ function ConfigureForm({
           owners,
           threshold: Number(threshold),
         };
-      case "spending_limit":
+      case "spending_limit": {
+        const allowed = splitList(allowedTokens);
+        const cap = capToken.trim() && capXlm.trim();
+        const safetyRules = {
+          ...(cap
+            ? {
+                maxSingleTransfer: [
+                  { token: capToken.trim(), amountBaseUnits: xlmToBaseUnits(capXlm.trim()) },
+                ],
+              }
+            : {}),
+          ...(allowed.length > 0 ? { allowedTokens: allowed } : {}),
+        };
         return {
           version: "1",
           type: "spending_limit",
@@ -218,6 +246,18 @@ function ConfigureForm({
             ...(dailyXlm ? { dailyXlm } : {}),
             ...(perTxXlm ? { perTxXlm } : {}),
           },
+          ...(Object.keys(safetyRules).length > 0 ? { safetyRules } : {}),
+        };
+      }
+      case "verified_only":
+        return {
+          version: "1",
+          type: "verified_only",
+          owners: [owner],
+          provenance:
+            provenanceMode === "strict"
+              ? { mode: "strict" }
+              : { mode: "trusted_publishers", trustedPublishers: splitList(trustedPublishers) },
         };
       case "contract_allowlist":
         return {
@@ -298,7 +338,82 @@ function ConfigureForm({
               inputMode="decimal"
             />
           </label>
+
+          <div className="lpa-well flex flex-col gap-3" data-testid="safety-rules">
+            <p className="m-0! text-[13px] leading-relaxed text-[var(--lp-ink-soft)]">
+              <strong>On-chain spending controls for supported transfer patterns.</strong> These
+              rules are checked by the policy contract itself when the account authorizes a
+              transaction — a violating transfer is rejected on-chain, not just warned about. They
+              understand one pattern: a token <code>transfer</code> from this account. They are
+              denominated in token units (there is no price oracle on Soroban, so never in USD), and
+              they are not a universal firewall: value moved through other contract paths is outside
+              their view.
+            </p>
+            <label className="lpa-field">
+              <span className="flabel">Max single transfer — token contract (C…, optional)</span>
+              <input
+                value={capToken}
+                onChange={(e) => setCapToken(e.target.value)}
+                placeholder="CB… (the XLM asset contract for XLM)"
+              />
+            </label>
+            <label className="lpa-field">
+              <span className="flabel">
+                Max single transfer — amount (in that token&apos;s units, 7 decimals)
+              </span>
+              <input
+                value={capXlm}
+                onChange={(e) => setCapXlm(e.target.value)}
+                placeholder="100"
+                inputMode="decimal"
+              />
+            </label>
+            <label className="lpa-field">
+              <span className="flabel">
+                Allowed token contracts (C…, comma or space separated, optional)
+              </span>
+              <textarea
+                rows={2}
+                value={allowedTokens}
+                onChange={(e) => setAllowedTokens(e.target.value)}
+                placeholder="CB… CD…"
+              />
+            </label>
+          </div>
         </>
+      )}
+
+      {template.type === "verified_only" && (
+        <div className="flex flex-col gap-3" data-testid="provenance-mode">
+          <p className="m-0! text-[13px] leading-relaxed text-[var(--lp-ink-soft)]">
+            Restrict this account to contracts with <em>verified source provenance</em>. Verified
+            means the deployed code was reproduced from inspectable, attributable source — not that
+            it is audited, benign or safe. Enforced by the policy contract on-chain; your passkey
+            can detach it at any time from Settings (the recovery path if the registry is
+            unavailable).
+          </p>
+          <label className="lpa-field">
+            <span className="flabel">Mode</span>
+            <select
+              value={provenanceMode}
+              onChange={(e) => setProvenanceMode(e.target.value as "strict" | "trusted_publishers")}
+            >
+              <option value="strict">Strict — any live attestation</option>
+              <option value="trusted_publishers">Trusted publishers only</option>
+            </select>
+          </label>
+          {provenanceMode === "trusted_publishers" && (
+            <label className="lpa-field">
+              <span className="flabel">Trusted publishers (e.g. github.com/vellar-wallet)</span>
+              <textarea
+                rows={3}
+                value={trustedPublishers}
+                onChange={(e) => setTrustedPublishers(e.target.value)}
+                placeholder="github.com/vellar-wallet"
+              />
+            </label>
+          )}
+        </div>
       )}
 
       {template.type === "contract_allowlist" && (
@@ -370,6 +485,17 @@ function ReviewCard({
       ? enforcement.constructorArgs
       : undefined;
   const isVerifiedOnly = policy.definition.type === "verified_only";
+  const definition = policy.definition as PolicyDefinition;
+  const safetyRules =
+    enforcement.kind === "policy-contract" &&
+    enforcement.constructorArgs &&
+    "rules" in enforcement.constructorArgs &&
+    enforcement.constructorArgs.rules
+      ? (enforcement.constructorArgs.rules as {
+          maxSingleTransfer: Array<{ token: string; amountBaseUnits: string }>;
+          allowedTokens: string[] | null;
+        })
+      : undefined;
   const busy = state.name === "simulating" || state.name === "deploying";
 
   async function runDeploy() {
@@ -455,8 +581,39 @@ function ReviewCard({
 
       {isVerifiedOnly && (
         <div className="lpa-well text-[13px] leading-relaxed text-[var(--lp-ink-soft)]">
-          Enforced on-chain against the attestation registry. Verified means provenance, not audited
-          or safe.
+          Enforced on-chain against the attestation registry
+          {definition.provenance?.mode === "trusted_publishers"
+            ? `, restricted to ${definition.provenance.trustedPublishers?.length ?? 0} trusted publisher(s)`
+            : ""}
+          . Verified means reproducible, attributable source provenance — not audited, benign or
+          safe. If the registry is unavailable the policy fails closed; detach it from Settings to
+          recover.
+        </div>
+      )}
+
+      {safetyRules && (
+        <div
+          className="lpa-well text-[13px] leading-relaxed text-[var(--lp-ink-soft)]"
+          data-testid="review-safety-rules"
+        >
+          <strong>Safety rules enforced on-chain</strong> for token transfers from this account:
+          <ul className="m-0 mt-1 pl-4.5">
+            {safetyRules.maxSingleTransfer.map((r) => (
+              <li key={r.token}>
+                No single transfer of {r.token.slice(0, 6)}…{r.token.slice(-6)} above{" "}
+                {stroopsToXlm(r.amountBaseUnits)} units.
+              </li>
+            ))}
+            {safetyRules.allowedTokens && (
+              <li>
+                Only these token contracts:{" "}
+                {safetyRules.allowedTokens.map((t) => `${t.slice(0, 6)}…${t.slice(-6)}`).join(", ")}
+                .
+              </li>
+            )}
+          </ul>
+          Denominated in token units, never USD. Scoped to the transfer pattern the policy
+          understands — not a universal firewall.
         </div>
       )}
 

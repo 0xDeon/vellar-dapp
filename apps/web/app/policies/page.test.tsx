@@ -187,3 +187,127 @@ describe("Policy builder", () => {
     expect(generateMock).not.toHaveBeenCalled();
   });
 });
+
+describe("Policy builder — on-chain safety rules (#399) and provenance modes (#398)", () => {
+  const XLM_SAC = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+
+  it("sends token-denominated safety rules with the spending-limit definition", async () => {
+    validateMock.mockResolvedValue({ valid: true, errors: [] });
+    generateMock.mockResolvedValue({
+      id: "p2",
+      createdAt: "2026-09-25T00:00:00Z",
+      status: "generated",
+      definition: { version: "1", type: "spending_limit", owners: [SESSION.accountId] },
+      policyHash: "e".repeat(64),
+      manifest: {
+        template: "spending_limit",
+        enforcement: {
+          kind: "policy-contract",
+          wasmHash: "ab".repeat(32),
+          constructorArgs: {
+            dailyLimitStroops: "1000000000",
+            windowSeconds: 86400,
+            rules: {
+              maxSingleTransfer: [{ token: XLM_SAC, amountBaseUnits: "200000000" }],
+              allowedTokens: [XLM_SAC],
+            },
+          },
+        },
+        network: "testnet",
+      },
+    });
+
+    renderPage();
+    fireEvent.click(await screen.findByText("Spending limit"));
+    expect(screen.getByTestId("safety-rules").textContent).toMatch(/supported transfer patterns/i);
+    expect(screen.getByTestId("safety-rules").textContent).toMatch(/never in USD/i);
+    fireEvent.change(screen.getByLabelText(/daily limit/i), { target: { value: "100" } });
+    fireEvent.change(screen.getByLabelText(/max single transfer — token contract/i), {
+      target: { value: XLM_SAC },
+    });
+    fireEvent.change(screen.getByLabelText(/max single transfer — amount/i), {
+      target: { value: "20" },
+    });
+    fireEvent.change(screen.getByLabelText(/allowed token contracts/i), {
+      target: { value: XLM_SAC },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /validate & generate/i }));
+
+    await waitFor(() =>
+      expect(validateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "spending_limit",
+          safetyRules: {
+            maxSingleTransfer: [{ token: XLM_SAC, amountBaseUnits: "200000000" }],
+            allowedTokens: [XLM_SAC],
+          },
+        }),
+      ),
+    );
+    // The review step states the enforced rules, scoped to the known pattern.
+    const review = await screen.findByTestId("review-safety-rules");
+    expect(review.textContent).toMatch(/No single transfer .* above 20 units/);
+    expect(review.textContent).toMatch(/not a universal firewall/i);
+  });
+
+  it("verified_only exposes strict / trusted-publishers modes and says provenance, not safety", async () => {
+    listMock.mockResolvedValue([
+      {
+        type: "verified_only",
+        title: "Verified provenance only",
+        description: "Restrict a signer to contracts with verified source provenance.",
+        enforcement: { kind: "policy-contract", wasmHash: "cd".repeat(32) },
+      },
+    ]);
+    validateMock.mockResolvedValue({ valid: true, errors: [] });
+    generateMock.mockResolvedValue({
+      id: "p3",
+      createdAt: "2026-09-25T00:00:00Z",
+      status: "generated",
+      definition: {
+        version: "1",
+        type: "verified_only",
+        owners: [SESSION.accountId],
+        provenance: { mode: "trusted_publishers", trustedPublishers: ["github.com/vellar-wallet"] },
+      },
+      policyHash: "d".repeat(64),
+      manifest: {
+        template: "verified_only",
+        enforcement: {
+          kind: "policy-contract",
+          wasmHash: "cd".repeat(32),
+          constructorArgs: {
+            registry: "CREG",
+            mode: "trusted_publishers",
+            trustedPublisherIds: ["ab".repeat(32)],
+          },
+        },
+        network: "testnet",
+      },
+    });
+
+    renderPage();
+    fireEvent.click(await screen.findByText("Verified provenance only"));
+    const mode = screen.getByTestId("provenance-mode");
+    expect(mode.textContent).toMatch(/not\s+that it is audited, benign or safe/i);
+    fireEvent.change(screen.getByLabelText(/^mode$/i), { target: { value: "trusted_publishers" } });
+    fireEvent.change(screen.getByLabelText(/trusted publishers/i), {
+      target: { value: "github.com/vellar-wallet" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /validate & generate/i }));
+    await waitFor(() =>
+      expect(validateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "verified_only",
+          provenance: {
+            mode: "trusted_publishers",
+            trustedPublishers: ["github.com/vellar-wallet"],
+          },
+        }),
+      ),
+    );
+    expect((await screen.findByText(/restricted to 1 trusted publisher/i)).textContent).toMatch(
+      /not audited, benign or\s+safe/i,
+    );
+  });
+});

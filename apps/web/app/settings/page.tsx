@@ -13,9 +13,14 @@ import {
 import { walletErrorMessage } from "@/lib/messages";
 import { useRevokeSession, useSessions } from "@/lib/sessions";
 import { useWalletActions, useWalletSession } from "@/lib/wallet-context";
+import { AddPasskeyCard } from "./add-passkey-card";
+import { AgentKeysCard } from "./agent-keys-card";
+import { ProvenanceCard } from "./provenance-card";
+import { SignersCard } from "./signers-card";
 
-// Account settings ("paper & signals" shell): session/device management +
-// extension pairing.
+// Account settings ("paper & signals" shell): signer management (#401),
+// agent keys (#394), verified-provenance signing (#398), extension pairing
+// and server-side device sessions.
 
 export default function Settings() {
   const session = useWalletSession();
@@ -46,6 +51,10 @@ export default function Settings() {
       <div className="flex max-w-[720px] flex-col gap-5">
         <h1>Settings</h1>
 
+        {session && <SignersCard session={session} />}
+        {session && <AddPasskeyCard session={session} />}
+        {session && <AgentKeysCard session={session} />}
+        {session && <ProvenanceCard session={session} />}
         {session && <ExtensionPairingCard session={session} />}
 
         <section className="lpa-panel">
@@ -153,7 +162,7 @@ function ExtensionPairingCard({ session }: { session: WalletSession }) {
       <p className="mt-2! text-xs leading-relaxed text-[var(--lp-ink-faint)]">
         Pair the Vellar extension as a device signer: it can approve dApp transactions for 7 days,
         then expires automatically. You approve the pairing in the extension, then confirm with your
-        passkey.
+        passkey. Paired devices appear in the signer list above as device sessions.
       </p>
 
       {detected === false && (
