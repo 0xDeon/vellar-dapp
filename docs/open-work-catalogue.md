@@ -53,22 +53,16 @@ externally** — flagged below.
 
 ---
 
-## Group 3 — Empty SDK packages
+## Group 3 — Empty SDK packages (Resolved)
 
-Two workspace packages are literally `export {}`. This matters more than it
-looks: the plan blocks the docs site on these having stable public APIs.
+Resolved on 2026-09-25 (Issue #413): `packages/policy-sdk` and `packages/lifecycle-sdk` stubs were deleted. Policy support lives natively on the `vellar-sdk` wallet handle (`wallet.policies`) per the 2026-07-22 decision, and the web app interacts directly with `lifecycle-service` without requiring a redundant SDK layer. Unused entries were removed from `apps/web/next.config.ts`, clearing the docs-site blocker.
 
 | Package                     | State                                                                                                                                                                   |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/policy-sdk`       | **Stub** — `export {}` and a comment. Both are declared in `apps/web/next.config.ts` transpile list, so the wiring is already there.                                    |
-| `packages/lifecycle-sdk`    | **Stub** — `export {}` and a comment.                                                                                                                                   |
+| `packages/policy-sdk`       | **Deleted** — folded into `vellar-sdk` wallet handle (`wallet.policies`).                                                                                               |
+| `packages/lifecycle-sdk`    | **Deleted** — direct web-to-service communication; no standalone SDK needed.                                                                                            |
 | `packages/verification-sdk` | Real: 237 lines + tests.                                                                                                                                                |
-| `packages/ui`               | Real — a 2-line barrel re-exporting a tested `TrustBadge`, used by both the web app and the extension popup. (Line count alone makes this look like a stub; it is not.) |
-
-The backend services these would wrap (`policy-service`, `lifecycle-service`)
-are complete and tested, so this is packaging and public-API design rather than
-new functionality. Worth deciding whether they are needed at all before building
-them — the web app currently talks to those services without an SDK layer.
+| `packages/ui`               | Real — a 2-line barrel re-exporting a tested `TrustBadge`, used by both the web app and the extension popup.                                                            |
 
 ---
 

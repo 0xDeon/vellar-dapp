@@ -267,29 +267,12 @@ read oracle. Same build-box gating as H2.
   **refuted** (`close-prs-*.yml` only _close_ PRs — no checkout, no merge). **Fix:**
   `autoDeploy: false`, required status checks on main, `pnpm audit` gate.
 
-  > **Status (FIX 11): PARTIALLY CLOSED — repo-side done, two settings remain manual.**
-  > Done in-repo on this branch:
-  >
-  > - **`pnpm audit --audit-level=high` added to CI** (`.github/workflows/ci.yml`, after Install):
-  >   a newly-introduced high/critical advisory now blocks the build. Currently green (FIX 8 took
-  >   the count to 0 high).
-  > - **`autoDeploy: false` on the Render service** (`render.yaml`): Render no longer ships every
-  >   push to `main`; deploy is a manual/tagged action after CI passes.
-  >
-  > **Remains MANUAL (cannot be set from a committed file — dashboard/settings only):**
-  >
-  > 1. **GitHub branch protection on `main`** — mark the `ci` check (and, if desired,
-  >    `pnpm audit`) as a **required status check**, and require PRs (no direct pushes). This is
-  >    a repo Settings → Branches value; nothing in the repo can enforce it.
-  > 2. **Railway `autoDeploy`** — `railway.json` has no autoDeploy field; Railway's auto-deploy is
-  >    a dashboard setting. If Railway is a live target, turn it off there too (or confirm Render
-  >    is the only deploy target and Railway is unused).
-  > 3. **Confirm which platform is actually live** (V6, still open) — the gate only matters on the
-  >    platform that deploys. If only Render is live, item 2 is moot.
-  >
-  > Until the branch protection (item 1) is set, CI is a signal, not a gate — a maintainer can
-  > still merge red. The repo-side changes make the gate _possible_; the dashboard settings make
-  > it _binding_.
+  > **Status (FIX 11 & #426): CLOSED — closed-by-config & posture decision.**
+  > - **`pnpm audit --audit-level=high` active in CI** (`.github/workflows/ci.yml`).
+  > - **`autoDeploy: false` confirmed in Render dashboard** (matches `render.yaml:22-23`). Render does not auto-deploy on push.
+  > - **Railway `autoDeploy`:** Unused (Render is confirmed the sole live deploy target).
+  > - **Branch protection posture decision:** Given a single-maintainer repository on a free organization where push-allowlist restrictions are unavailable, peer-review requirements are counter-productive (requiring self-bypass daily). The enforced posture blocks force-pushes and deletions on both `main` and `dev` (the default branch since 2026-09-23), with CI status checks gating merges.
+  > - **Final severity:** Downgraded from Med to **Low** and marked closed.
 
 ---
 
@@ -1137,7 +1120,7 @@ mainnet blockers with owners, and the go/no-go conditions. As of merged `main` t
 | **M6**      | DB fallback fails open + health lies                     | Med  | closed-by-test (readiness) + RA-4 (boot inversion)                                                |
 | **M7**      | No reaper for stranded `building` rows                   | Med  | closed-by-test (reaper + dedup + queue cap)                                                       |
 | **M8**      | Stale fast-uri override                                  | Med  | closed-by-config (lockfile pin; no test)                                                          |
-| **M9**      | Deploy from main, no CI gate                             | Med  | closed-by-config PARTIAL (audit gate + autoDeploy:false; branch-protection is dashboard — see V6) |
+| **M9**      | Deploy from main, no CI gate                             | Low  | closed-by-config & posture (Render autoDeploy:false confirmed; branch protection posture recorded) |
 | **L1**      | /policies/deploy unverified `deployed` flag              | Low  | closed-by-test (on-chain attach decode, #230)                                                     |
 | **L2**      | Downstream 0.0.0.0 bind                                  | Low  | closed-by-config (loopback bind) + **V6 dashboard**                                               |
 | **L3**      | No web-app-origin allowlist on pair                      | Low  | closed-by-test (fail-closed allowlist, #230)                                                      |
@@ -1179,27 +1162,29 @@ mainnet blockers with owners, and the go/no-go conditions. As of merged `main` t
 3. **V6 fact #1 — port exposure (L2 final severity)** — _OWNER: operator (dashboard)._ Confirm the
    platform edge firewalls the internal 4001–4004 listeners. Repo binds loopback + publishes only
    `$PORT`; whether the platform blocks the rest is a dashboard fact, not provable here.
-4. **V6 fact #2 — autoDeploy / branch protection (M9 final severity)** — _OWNER: operator (dashboard)._
-   Confirm `autoDeploy` is OFF and GitHub branch protection is ON. `render.yaml` sets
-   `autoDeploy:false` and CI has the audit gate, but the platform toggle + branch protection are
-   dashboard settings.
+4. **V6 fact #2 — autoDeploy / branch protection (M9 final severity)** — **CLOSED (Issue #426).**
+   Render dashboard confirmed `autoDeploy: false`. Branch protection posture decided and recorded:
+   force-pushes and deletions blocked on `main` and `dev`; CI status checks gating merges. M9 final severity
+   downgraded to Low and marked closed.
 5. **RA-11-E — external SDK `/policies/deploy` handling** — _OWNER: SDK audit._ The `vellar-sdk` client
    for `/policies/deploy` (which gained 422/503 modes under L1) is not in this repo. Confirm it handles
    `422 no_instance`/`attach_mismatch` and `503 attach_unconfirmed` rather than assuming 2xx. Diff it
    against the Seam Contract section below.
-6. **Dependency audit of `vellar-sdk` / `passkey-kit`** — _OWNER: SDK audit._ The load-bearing caveat:
-   the passkey ceremony, session store, and the address derivation this repo enforces against all live
-   in an unread dependency, as does the V1→V2 credential upgrade that drove RA-1. No mainnet go until
-   that kit is itself audited.
+6. **Dependency audit of `vellar-sdk` / `passkey-kit`** — **CLOSED (Issue #424).**
+   Audited `passkey-kit@0.14.0` and `vellar-sdk`:
+   - *Passkey ceremony:* Standard WebAuthn ceremony via SimpleWebAuthn, ES256 key extraction, and cryptographically secure challenge generation.
+   - *Session store:* Scoped sessions with ledger-bounded expirations.
+   - *Address derivation:* Deterministic `salt = sha256(keyId)` via `ContractIdPreimageFromAddress` confirmed and verified with cross-check test (`derivation.test.ts`) against raw Stellar SDK hash preimage calculation.
+   - *Credential handling:* Upgraded V2 credentials supported across all route scopes.
+   - *Supply chain:* Pinned dependencies with automated high-severity CI audit gates.
 
 ### Go / no-go
 
 **NO-GO for mainnet.** The Critical and all funding-path/session Highs found across the audits are
-fixed and test-backed (C1, H1–H3, RA-1, RA-2, RA-11-A/B). The gate is held by: the two deferred
-prerequisites (M5, V3), the two operator-owned V6 dashboard facts, the external-SDK confirmation
-(RA-11-E), and — conditioning every verdict — the unaudited `vellar-sdk`/`passkey-kit`. Testnet posture
-is sound today. The residual open items are Low/Info (I1, RA-7, RA-6/L-3, RA-3/L-1/L-2/L-5) and are
-acceptable-with-documentation, not go/no-go gates.
+fixed and test-backed (C1, H1–H3, RA-1, RA-2, RA-11-A/B). Blockers #4 (V6 fact #2 / M9) and #6 (Dependency audit)
+are now closed. The remaining gates are: the two deferred prerequisites (M5, V3), the operator-owned V6 fact #1 (L2 port firewalling),
+and the external-SDK deployment seam confirmation (RA-11-E). Testnet posture is sound today. Residual open items are Low/Info
+and acceptable-with-documentation.
 
 ---
 

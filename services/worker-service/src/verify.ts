@@ -18,6 +18,8 @@ import { calculateBackoffDelay, BACKOFF_CONFIG } from "./backoff";
 
 export interface VerificationJobInput extends BuildInput {
   contractId: string;
+  timestamp?: number;
+  signature?: string;
 }
 
 export interface VerificationOutcome {
@@ -51,6 +53,8 @@ export interface RunVerificationDeps {
   baseDelayMs?: number;
   /** Maximum delay cap in ms for exponential backoff. Defaults to BACKOFF_CONFIG.MAX_DELAY_MS. */
   maxDelayMs?: number;
+  /** Shared secret for job payload cryptographic signature verification (Phase 7). */
+  jobSecret?: string;
 }
 
 /**
@@ -72,6 +76,21 @@ export async function runVerification(
   const baseDelayMs = deps.baseDelayMs ?? BACKOFF_CONFIG.BASE_DELAY_MS;
   const maxDelayMs = deps.maxDelayMs ?? BACKOFF_CONFIG.MAX_DELAY_MS;
 
+  // 0. Verify job payload cryptographic signature (Phase 7 / Issue #421)
+  if (deps.jobSecret) {
+    const { verifyJobSignature } = await import("./job-signature");
+    const sigResult = verifyJobSignature(job, deps.jobSecret);
+    if (!sigResult.valid) {
+      return {
+        status: "failed",
+        statusDetail: `Signature verification failed (${sigResult.reason}).`,
+        log: `Verification job rejected: payload signature verification failed (${sigResult.reason}). Fail closed.`,
+        isRetryable: false,
+        retryAttempt,
+      };
+    }
+  }
+
   // 1. Resolve the on-chain trust anchor first — if the contract doesn't exist
   //    or is a SAC, there is nothing to verify and we skip the expensive build.
   let deployedHash: string;
@@ -89,7 +108,8 @@ export async function runVerification(
       if (err.code === "timeout") {
         throw err;
       }
-      return {
+      const isTransient = isTransientFailure(err);
+      const outcome: VerificationOutcome = {
         status: "failed",
         statusDetail: `Could not resolve the deployed contract (${err.code}).`,
         log: `Could not resolve the deployed contract: ${err.message} (${err.code}).`,

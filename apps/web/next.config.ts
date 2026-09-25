@@ -12,9 +12,7 @@ const nextConfig: NextConfig = {
     "vellar-sdk",
     "@vellar/passkey",
     "@vellar/provider-sdk",
-    "@vellar/policy-sdk",
     "@vellar/verification-sdk",
-    "@vellar/lifecycle-sdk",
   ],
 };
 
