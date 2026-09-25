@@ -98,6 +98,23 @@ export function createRegistrySubmitter(options: RegistrySubmitterOptions): Atte
       ]);
     },
 
+    async upsertWithPublisher(contractId, wasmHashHex, publisherIdHex, expiresLedger) {
+      const hash = Buffer.from(wasmHashHex, "hex");
+      if (hash.length !== 32) {
+        throw new Error(`attested wasm hash must be 32 bytes, got ${hash.length}`);
+      }
+      const publisher = Buffer.from(publisherIdHex, "hex");
+      if (publisher.length !== 32) {
+        throw new Error(`publisher id must be 32 bytes, got ${publisher.length}`);
+      }
+      await invoke("upsert_with_publisher", [
+        nativeToScVal(contractId, { type: "address" }),
+        nativeToScVal(hash, { type: "bytes" }),
+        nativeToScVal(publisher, { type: "bytes" }),
+        nativeToScVal(expiresLedger, { type: "u32" }),
+      ]);
+    },
+
     async revoke(contractId) {
       await invoke("revoke", [nativeToScVal(contractId, { type: "address" })]);
     },

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { publisherIdFor } from "@vellar/service-kit";
 import { createAttestor, type AttestationSubmitter } from "./attestor";
 import { createMemoryJobStore } from "./memory-job-store";
 import { ArtifactResolveError, type ContractArtifactResolver } from "./resolver";
@@ -8,10 +9,17 @@ const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 
 function fakeSubmitter(over: Partial<AttestationSubmitter> = {}) {
-  const calls = { upserts: [] as Array<[string, string, number]>, revokes: [] as string[] };
+  const calls = {
+    upserts: [] as Array<[string, string, number]>,
+    attributed: [] as Array<[string, string, string, number]>,
+    revokes: [] as string[],
+  };
   const submitter: AttestationSubmitter = {
     async upsert(contract, hash, expires) {
       calls.upserts.push([contract, hash, expires]);
+    },
+    async upsertWithPublisher(contract, hash, publisher, expires) {
+      calls.attributed.push([contract, hash, publisher, expires]);
     },
     async revoke(contract) {
       calls.revokes.push(contract);
@@ -46,6 +54,32 @@ describe("attestor.reportOutcome", () => {
     await attestor.reportOutcome("CCONTRACT", verified());
     expect(calls.upserts).toEqual([["CCONTRACT", HASH_A, 1500]]);
     expect(calls.revokes).toEqual([]);
+  });
+
+  it("attributes the attestation to the repo owner when the source has a repoUrl", async () => {
+    const { submitter, calls } = fakeSubmitter();
+    const attestor = createAttestor({ submitter, ttlLedgers: 500 });
+    await attestor.reportOutcome("CCONTRACT", verified(), {
+      repoUrl: "https://github.com/Vellar-Wallet/vellar-dapp",
+    });
+    expect(calls.upserts).toEqual([]);
+    expect(calls.attributed).toEqual([
+      ["CCONTRACT", HASH_A, publisherIdFor("github.com/vellar-wallet"), 1500],
+    ]);
+  });
+
+  it("writes an UNattributed attestation when the source cannot be attributed", async () => {
+    // An upload-sourced verification (no repoUrl) or a repoUrl with no owner
+    // segment is verified but never trusted-publisher-eligible.
+    const { submitter, calls } = fakeSubmitter();
+    const attestor = createAttestor({ submitter, ttlLedgers: 500 });
+    await attestor.reportOutcome("CA", verified(), {});
+    await attestor.reportOutcome("CB", verified(), { repoUrl: "https://github.com/" });
+    expect(calls.attributed).toEqual([]);
+    expect(calls.upserts).toEqual([
+      ["CA", HASH_A, 1500],
+      ["CB", HASH_A, 1500],
+    ]);
   });
 
   it("skips a verified outcome without an outputHash (never attests an empty claim)", async () => {

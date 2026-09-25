@@ -51,6 +51,38 @@ export interface PolicyDefinition {
   timelocks?: {
     adminActionDelaySeconds?: number;
   };
+  /**
+   * On-chain safety rules for the `spending_limit` template (#399). Every
+   * amount is in the token's BASE UNITS (stroops for XLM) — there is no price
+   * oracle on Soroban, so rules are never fiat-denominated. Both tables are
+   * bounded by the contract (8 entries each).
+   */
+  safetyRules?: {
+    /** Per-token ceiling on any single transfer. */
+    maxSingleTransfer?: Array<{ token: string; amountBaseUnits: string }>;
+    /** When set, only transfers of these token contracts are authorized. */
+    allowedTokens?: string[];
+  };
+  /**
+   * Per-token budget for the `token_spending_limit` template (#394): the
+   * cumulative allowance of ONE token contract over a fixed window, in that
+   * token's base units.
+   */
+  tokenBudget?: {
+    token: string;
+    amountBaseUnits: string;
+    windowSeconds?: number;
+  };
+  /**
+   * Provenance mode for the `verified_only` template (#398). `strict` = any
+   * live attestation; `trusted_publishers` = only attestations attributed to
+   * one of the listed publishers (e.g. "github.com/vellar-wallet"). Verified
+   * means reproducible, attributable source provenance — not audited or safe.
+   */
+  provenance?: {
+    mode: "strict" | "trusted_publishers";
+    trustedPublishers?: string[];
+  };
 }
 
 // --- Contract Verification Module (idea.md §6.3) ---

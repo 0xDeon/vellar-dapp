@@ -61,6 +61,7 @@ export {
 } from "./budget";
 
 export { createPgSpendBudget, type BudgetDb, type PgBudgetConfig } from "./pg-budget";
+export { canonicalPublisher, publisherIdFor, publisherIdHex } from "./publisher";
 
 export {
   extractTraceContext,
@@ -98,9 +99,7 @@ export interface HealthOptions {
   isReady?: () => boolean | Promise<boolean>;
 }
 
-async function evaluateReadiness(
-  isReady: HealthOptions["isReady"],
-): Promise<boolean> {
+async function evaluateReadiness(isReady: HealthOptions["isReady"]): Promise<boolean> {
   if (!isReady) return true;
   try {
     return await isReady();

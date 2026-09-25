@@ -10,7 +10,12 @@ import {
   TransactionBuilder,
   xdr,
 } from "@stellar/stellar-sdk";
-import type { SpendingConstructor, VerifiedRecipientConstructor } from "./templates";
+import type {
+  SafetyRulesConstructor,
+  SpendingConstructor,
+  TokenSpendingConstructor,
+  VerifiedRecipientConstructor,
+} from "./templates";
 
 // Server-side deploy of a per-user spending-limit policy instance.
 //
@@ -21,9 +26,11 @@ import type { SpendingConstructor, VerifiedRecipientConstructor } from "./templa
 //   2. The web app passkey-signs `kit.addPolicy(contractId, …)`, which runs
 //      the contract's `install` hook (asserts wallet == the bound wallet).
 //
-// The contract's `__constructor(wallet, daily_limit, window_seconds)` sets the
-// immutable cap. `install` and `policy__` both reject any wallet other than
-// `wallet`, so binding here is what makes the instance single-tenant.
+// The contract's `__constructor(wallet, daily_limit, window_seconds, rules)`
+// sets the immutable cap + safety rules. `install` and `policy__` both reject
+// any wallet other than `wallet`, so binding here is what makes the instance
+// single-tenant. The token-scoped and verified-recipient templates have their
+// own constructor shapes (see `constructorScVals`).
 //
 // Structural seams (an injected clock/rpc are unnecessary here; the rpc.Server
 // is the only external dependency) mirror wallet-service/sponsor.ts.
@@ -114,26 +121,82 @@ export interface DeployPolicyInstanceInput {
   /** The user's smart-account (C…) the instance is bound to. */
   wallet: string;
   /** Template-specific constructor args from the generated manifest:
-   * spending-limit → { dailyLimitStroops, windowSeconds };
-   * verified-recipient → { registry }. The wallet is always arg 0. */
-  constructorArgs: SpendingConstructor | VerifiedRecipientConstructor;
+   * spending-limit → { dailyLimitStroops, windowSeconds, rules? };
+   * token-spending-limit → { token, dailyLimitBaseUnits, windowSeconds };
+   * verified-recipient → { registry, mode, trustedPublisherIds? }.
+   * The wallet is always arg 0. */
+  constructorArgs: SpendingConstructor | TokenSpendingConstructor | VerifiedRecipientConstructor;
+}
+
+const addressVal = (a: string) => nativeToScVal(Address.fromString(a), { type: "address" });
+
+/** Host maps must be key-sorted; contract addresses sort by their 32 raw bytes. */
+function sortedByContractId<T extends { token: string }>(entries: T[]): T[] {
+  return [...entries].sort((a, b) =>
+    Buffer.compare(Address.fromString(a.token).toBuffer(), Address.fromString(b.token).toBuffer()),
+  );
+}
+
+/** The spending-limit contract's `SafetyRules` struct
+ * `{ allowed_tokens: Option<Vec<Address>>, max_single_transfer: Map<Address, i128> }`
+ * (struct fields encode as a symbol-keyed ScMap in field-name order). */
+export function safetyRulesScVal(rules: SafetyRulesConstructor | undefined): xdr.ScVal {
+  const allowed = rules?.allowedTokens
+    ? xdr.ScVal.scvVec(rules.allowedTokens.map(addressVal))
+    : xdr.ScVal.scvVoid();
+  const caps = xdr.ScVal.scvMap(
+    sortedByContractId(rules?.maxSingleTransfer ?? []).map(
+      ({ token, amountBaseUnits }) =>
+        new xdr.ScMapEntry({
+          key: addressVal(token),
+          val: nativeToScVal(BigInt(amountBaseUnits), { type: "i128" }),
+        }),
+    ),
+  );
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol("allowed_tokens"), val: allowed }),
+    new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol("max_single_transfer"), val: caps }),
+  ]);
+}
+
+/** The verified-recipient contract's `ProvenanceMode` enum: `Strict` is a
+ * unit variant (`["Strict"]`), `TrustedPublishers(Vec<BytesN<32>>)` a tuple
+ * variant (`["TrustedPublishers", [bytes…]]`). */
+export function provenanceModeScVal(args: VerifiedRecipientConstructor): xdr.ScVal {
+  if (args.mode === "trusted_publishers") {
+    const ids = (args.trustedPublisherIds ?? []).map((hex) => {
+      const bytes = Buffer.from(hex, "hex");
+      if (bytes.length !== 32) throw new Error(`publisher id must be 32 bytes: ${hex}`);
+      return nativeToScVal(bytes, { type: "bytes" });
+    });
+    return xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("TrustedPublishers"), xdr.ScVal.scvVec(ids)]);
+  }
+  return xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("Strict")]);
 }
 
 /** ScVals for the template's `__constructor`, discriminated by args shape. */
-function constructorScVals(input: DeployPolicyInstanceInput): xdr.ScVal[] {
-  const wallet = nativeToScVal(Address.fromString(input.wallet), { type: "address" });
-  if ("registry" in input.constructorArgs) {
-    // __constructor(wallet: Address, registry: Address)
+export function constructorScVals(input: DeployPolicyInstanceInput): xdr.ScVal[] {
+  const wallet = addressVal(input.wallet);
+  const args = input.constructorArgs;
+  if ("registry" in args) {
+    // __constructor(wallet: Address, registry: Address, mode: ProvenanceMode)
+    return [wallet, addressVal(args.registry), provenanceModeScVal(args)];
+  }
+  if ("token" in args) {
+    // __constructor(wallet: Address, token: Address, daily_limit: i128, window_seconds: u64)
     return [
       wallet,
-      nativeToScVal(Address.fromString(input.constructorArgs.registry), { type: "address" }),
+      addressVal(args.token),
+      nativeToScVal(BigInt(args.dailyLimitBaseUnits), { type: "i128" }),
+      nativeToScVal(args.windowSeconds, { type: "u64" }),
     ];
   }
-  // __constructor(wallet: Address, daily_limit: i128, window_seconds: u64)
+  // __constructor(wallet: Address, daily_limit: i128, window_seconds: u64, rules: SafetyRules)
   return [
     wallet,
-    nativeToScVal(BigInt(input.constructorArgs.dailyLimitStroops), { type: "i128" }),
-    nativeToScVal(input.constructorArgs.windowSeconds, { type: "u64" }),
+    nativeToScVal(BigInt(args.dailyLimitStroops), { type: "i128" }),
+    nativeToScVal(args.windowSeconds, { type: "u64" }),
+    safetyRulesScVal(args.rules),
   ];
 }
 

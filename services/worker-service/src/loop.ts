@@ -94,7 +94,9 @@ export async function runWorkerTick(deps: WorkerDeps): Promise<number> {
       const corrTag = job.correlationId ? ` [correlationId=${job.correlationId}]` : "";
       log.info(`verification ${job.recordId} → ${outcome.status} (${job.contractId})${corrTag}`);
       // Mirror the outcome on-chain (best-effort; never throws).
-      if (deps.attestor) await deps.attestor.reportOutcome(job.contractId, outcome);
+      if (deps.attestor) {
+        await deps.attestor.reportOutcome(job.contractId, outcome, { repoUrl: job.repoUrl });
+      }
     } catch (err) {
       // runVerification only throws on truly unexpected errors; leave the record
       // "building" so it can be retried, and keep processing the batch.
@@ -213,4 +215,3 @@ export function startWorkerLoop(
     },
   };
 }
-

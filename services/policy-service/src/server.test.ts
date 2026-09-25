@@ -10,11 +10,14 @@ import {
   nativeToScVal,
   xdr,
 } from "@stellar/stellar-sdk";
+import { publisherIdFor } from "@vellar/service-kit";
 import {
   ATTESTATION_REGISTRY_ID,
   DEFAULT_WINDOW_SECONDS,
+  generatePolicy,
   policyHash,
   SPENDING_POLICY_WASM_HASH,
+  TOKEN_SPENDING_POLICY_WASM_HASH,
   validateDefinition,
   VERIFIED_RECIPIENT_WASM_HASH,
   xlmToStroops,
@@ -150,12 +153,22 @@ describe("validateDefinition", () => {
     ],
     [
       "all zeroes decimal spending limit",
-      { version: "1", type: "spending_limit", owners: [C1], spendingLimits: { dailyXlm: "0.0000000" } },
+      {
+        version: "1",
+        type: "spending_limit",
+        owners: [C1],
+        spendingLimits: { dailyXlm: "0.0000000" },
+      },
       /at least 1 stroop/,
     ],
     [
       "sub-stroop precision exceeding 7 decimal places",
-      { version: "1", type: "spending_limit", owners: [C1], spendingLimits: { dailyXlm: "0.00000001" } },
+      {
+        version: "1",
+        type: "spending_limit",
+        owners: [C1],
+        spendingLimits: { dailyXlm: "0.00000001" },
+      },
       /at most 7 decimal places/,
     ],
     [
@@ -165,12 +178,22 @@ describe("validateDefinition", () => {
     ],
     [
       "non-numeric spending limit",
-      { version: "1", type: "spending_limit", owners: [C1], spendingLimits: { dailyXlm: "invalid" } },
+      {
+        version: "1",
+        type: "spending_limit",
+        owners: [C1],
+        spendingLimits: { dailyXlm: "invalid" },
+      },
       /valid decimal amount/,
     ],
     [
       "perTxXlm exceeds dailyXlm",
-      { version: "1", type: "spending_limit", owners: [C1], spendingLimits: { dailyXlm: "50", perTxXlm: "100" } },
+      {
+        version: "1",
+        type: "spending_limit",
+        owners: [C1],
+        spendingLimits: { dailyXlm: "50", perTxXlm: "100" },
+      },
       /perTxXlm cannot exceed dailyXlm/,
     ],
     [
@@ -195,12 +218,22 @@ describe("validateDefinition", () => {
     ],
     [
       "timelock exceeding 365 days",
-      { version: "1", type: "timelock", owners: [C1], timelocks: { adminActionDelaySeconds: 31_536_001 } },
+      {
+        version: "1",
+        type: "timelock",
+        owners: [C1],
+        timelocks: { adminActionDelaySeconds: 31_536_001 },
+      },
       /delay cannot exceed 31,536,000 seconds/,
     ],
     [
       "timelock with decimal delay",
-      { version: "1", type: "timelock", owners: [C1], timelocks: { adminActionDelaySeconds: 3600.5 } },
+      {
+        version: "1",
+        type: "timelock",
+        owners: [C1],
+        timelocks: { adminActionDelaySeconds: 3600.5 },
+      },
       /delay must be an integer/,
     ],
     [
@@ -238,7 +271,7 @@ describe("Policy API", () => {
       kind: "policy-contract",
       wasmHash: SPENDING_POLICY_WASM_HASH,
     });
-    expect(res.json()).toHaveLength(6);
+    expect(res.json()).toHaveLength(7);
   });
 
   it("generate → review artifacts → GET → deploy records the deployment", async () => {
@@ -288,7 +321,7 @@ describe("Policy API", () => {
 
   it("emits a policy.deployed analytics event on successful deployment (issue #347)", async () => {
     const server = build();
-    
+
     // Generate a spending policy
     const generated = await server.inject({
       method: "POST",
@@ -303,7 +336,7 @@ describe("Policy API", () => {
       url: "/policies/deploy",
       payload: { policyId: policy.id, txHash: "abc123", contractId: C1 },
     });
-    
+
     expect(deployed.statusCode).toBe(200);
     expect(deployed.json().policy.status).toBe("deployed");
     // The analytics event is emitted via logEvent (verified by log mocking in integration).
@@ -312,14 +345,14 @@ describe("Policy API", () => {
 
   it("does NOT emit policy.deployed when deployment fails", async () => {
     const server = build();
-    
+
     // Try to deploy a non-existent policy — should 404
     const deployed = await server.inject({
       method: "POST",
       url: "/policies/deploy",
       payload: { policyId: "nope", txHash: "abc123", contractId: C1 },
     });
-    
+
     expect(deployed.statusCode).toBe(404);
     // No event emitted on failure
   });
@@ -514,6 +547,7 @@ describe("POST /policies/:id/deploy-instance", () => {
     expect(policy.manifest.enforcement.wasmHash).toBe(VERIFIED_RECIPIENT_WASM_HASH);
     expect(policy.manifest.enforcement.constructorArgs).toEqual({
       registry: ATTESTATION_REGISTRY_ID,
+      mode: "strict",
     });
 
     const res = await server.inject({
@@ -524,7 +558,7 @@ describe("POST /policies/:id/deploy-instance", () => {
     expect(res.statusCode).toBe(200);
     expect(deployInstance).toHaveBeenCalledWith({
       wallet: C1,
-      constructorArgs: { registry: ATTESTATION_REGISTRY_ID },
+      constructorArgs: { registry: ATTESTATION_REGISTRY_ID, mode: "strict" },
     });
   });
 
@@ -849,3 +883,233 @@ describe("CSRF protection for admin endpoints (Issue #311)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #399 safety rules · #394 token budget · #398 provenance modes
+
+const C2 = "CBZVS2ETJKCIMRRWUHTZFVMWDACJNYUZ54JIXUJCHXNBFNXELKTSWHGP";
+const C3 = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+
+describe("spending_limit safety rules (#399)", () => {
+  const withRules = (safetyRules: unknown) => ({ ...spendingPolicy, safetyRules });
+
+  it("accepts per-token single-transfer caps and a token allowlist, in base units", () => {
+    expect(
+      validateDefinition(
+        withRules({
+          maxSingleTransfer: [{ token: C2, amountBaseUnits: "1000000000" }],
+          allowedTokens: [C2, C3],
+        }),
+      ),
+    ).toEqual({ valid: true, errors: [] });
+  });
+
+  it.each([
+    [
+      "fiat / decimal amounts",
+      { maxSingleTransfer: [{ token: C2, amountBaseUnits: "10.5" }] },
+      /whole number of base units/,
+    ],
+    [
+      "zero cap",
+      { maxSingleTransfer: [{ token: C2, amountBaseUnits: "0" }] },
+      /at least 1 base unit/,
+    ],
+    ["non-contract token", { allowedTokens: [G1] }, /contract address/],
+    ["empty allowlist", { allowedTokens: [] }, /at least one token/],
+    ["duplicate allowlist", { allowedTokens: [C2, C2] }, /duplicate/],
+    [
+      "more caps than the contract bound",
+      {
+        maxSingleTransfer: Array.from({ length: 9 }, (_, i) => ({
+          token: C2.slice(0, -1) + "ABCDEFGHJ"[i],
+          amountBaseUnits: "1",
+        })),
+      },
+      /at most 8/,
+    ],
+    ["unknown rule keys", { usdCap: "100" }, /unrecognized|Unrecognized|unknown/i],
+  ])("rejects %s", (_name, safetyRules, pattern) => {
+    const result = validateDefinition(withRules(safetyRules));
+    expect(result.valid).toBe(false);
+    expect(result.errors.join("\n")).toMatch(pattern);
+  });
+
+  it("generate bakes the rules into the constructor args; no rules → no rules field", () => {
+    const ruled = generatePolicy(
+      withRules({
+        maxSingleTransfer: [{ token: C2, amountBaseUnits: "50000000" }],
+        allowedTokens: [C2],
+      }) as never,
+      "testnet",
+    );
+    expect(ruled.manifest.enforcement).toEqual({
+      kind: "policy-contract",
+      wasmHash: SPENDING_POLICY_WASM_HASH,
+      constructorArgs: {
+        dailyLimitStroops: xlmToStroops("100").toString(),
+        windowSeconds: DEFAULT_WINDOW_SECONDS,
+        rules: {
+          maxSingleTransfer: [{ token: C2, amountBaseUnits: "50000000" }],
+          allowedTokens: [C2],
+        },
+      },
+    });
+    const plain = generatePolicy(spendingPolicy as never, "testnet");
+    expect(plain.manifest.enforcement).toEqual({
+      kind: "policy-contract",
+      wasmHash: SPENDING_POLICY_WASM_HASH,
+      constructorArgs: {
+        dailyLimitStroops: xlmToStroops("100").toString(),
+        windowSeconds: DEFAULT_WINDOW_SECONDS,
+      },
+    });
+  });
+});
+
+describe("token_spending_limit (#394 agent budget)", () => {
+  const budget = (tokenBudget: unknown) => ({
+    version: "1",
+    type: "token_spending_limit",
+    owners: [C1],
+    tokenBudget,
+  });
+
+  it("validates a token-scoped budget in base units", () => {
+    expect(validateDefinition(budget({ token: C2, amountBaseUnits: "100000000" }))).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(
+      validateDefinition(budget({ token: C2, amountBaseUnits: "1", windowSeconds: 3600 })),
+    ).toEqual({ valid: true, errors: [] });
+  });
+
+  it.each([
+    ["missing budget", undefined, /tokenBudget/],
+    ["decimal amount", { token: C2, amountBaseUnits: "1.5" }, /whole number/],
+    [
+      "window over a year",
+      { token: C2, amountBaseUnits: "1", windowSeconds: 31_536_001 },
+      /365 days/,
+    ],
+    ["G-account token", { token: G1, amountBaseUnits: "1" }, /contract address/],
+  ])("rejects %s", (_name, tokenBudget, pattern) => {
+    const result = validateDefinition(budget(tokenBudget));
+    expect(result.valid).toBe(false);
+    expect(result.errors.join("\n")).toMatch(pattern);
+  });
+
+  it("generate → deploy-instance passes (wallet, token, limit, window) to the deployer", async () => {
+    const { deployer, deployInstance } = stubDeployer();
+    const server = build(deployer);
+    const gen = await server.inject({
+      method: "POST",
+      url: "/policies/generate",
+      payload: {
+        definition: budget({ token: C2, amountBaseUnits: "100000000" }),
+        network: "testnet",
+      },
+    });
+    expect(gen.statusCode).toBe(201);
+    const policy = gen.json().policy as { id: string; manifest: { enforcement: unknown } };
+    expect(policy.manifest.enforcement).toEqual({
+      kind: "policy-contract",
+      wasmHash: TOKEN_SPENDING_POLICY_WASM_HASH,
+      constructorArgs: {
+        token: C2,
+        dailyLimitBaseUnits: "100000000",
+        windowSeconds: DEFAULT_WINDOW_SECONDS,
+      },
+    });
+    const res = await server.inject({
+      method: "POST",
+      url: `/policies/${policy.id}/deploy-instance`,
+      payload: { wallet: C1 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(deployInstance).toHaveBeenCalledWith({
+      wallet: C1,
+      constructorArgs: {
+        token: C2,
+        dailyLimitBaseUnits: "100000000",
+        windowSeconds: DEFAULT_WINDOW_SECONDS,
+      },
+    });
+  });
+});
+
+describe("verified_only provenance modes (#398)", () => {
+  const verified = (provenance?: unknown) => ({
+    version: "1",
+    type: "verified_only",
+    owners: [C1],
+    ...(provenance === undefined ? {} : { provenance }),
+  });
+
+  it("defaults to strict and accepts an explicit strict mode", () => {
+    expect(validateDefinition(verified())).toEqual({ valid: true, errors: [] });
+    expect(validateDefinition(verified({ mode: "strict" }))).toEqual({ valid: true, errors: [] });
+    expect(generatePolicy(verified() as never, "testnet").manifest.enforcement).toEqual({
+      kind: "policy-contract",
+      wasmHash: VERIFIED_RECIPIENT_WASM_HASH,
+      constructorArgs: { registry: ATTESTATION_REGISTRY_ID, mode: "strict" },
+    });
+  });
+
+  it("trusted publishers: canonicalizes + hashes the publisher set (a publisher set, not a hash list)", () => {
+    const def = verified({
+      mode: "trusted_publishers",
+      trustedPublishers: [
+        "https://github.com/Vellar-Wallet/vellar-dapp",
+        "github.com/vellar-wallet",
+        "gitlab.com/acme",
+      ],
+    });
+    expect(validateDefinition(def)).toEqual({ valid: true, errors: [] });
+    const args = generatePolicy(def as never, "testnet").manifest.enforcement;
+    expect(args).toEqual({
+      kind: "policy-contract",
+      wasmHash: VERIFIED_RECIPIENT_WASM_HASH,
+      constructorArgs: {
+        registry: ATTESTATION_REGISTRY_ID,
+        mode: "trusted_publishers",
+        // The two github spellings collapse to ONE publisher id.
+        trustedPublisherIds: [
+          publisherIdFor("github.com/vellar-wallet"),
+          publisherIdFor("gitlab.com/acme"),
+        ],
+      },
+    });
+  });
+
+  it.each([
+    [
+      "trusted mode with no publishers",
+      { mode: "trusted_publishers", trustedPublishers: [] },
+      /at least one publisher/,
+    ],
+    [
+      "unattributable publisher",
+      { mode: "trusted_publishers", trustedPublishers: ["https://github.com/"] },
+      /host and owner/,
+    ],
+    ["unknown mode", { mode: "warn" }, /mode/],
+    [
+      "publishers on strict",
+      { mode: "strict", trustedPublishers: ["github.com/a"] },
+      /unrecognized|Unrecognized/i,
+    ],
+  ])("rejects %s", (_name, provenance, pattern) => {
+    const result = validateDefinition(verified(provenance));
+    expect(result.valid).toBe(false);
+    expect(result.errors.join("\n")).toMatch(pattern);
+  });
+
+  it("template copy says provenance, never safety", async () => {
+    const server = build();
+    const res = await server.inject({ url: "/policies/templates" });
+    const t = res.json().find((x: { type: string }) => x.type === "verified_only");
+    expect(`${t.title} ${t.description}`).toMatch(/provenance/i);
+    expect(`${t.title} ${t.description}`).not.toMatch(/\b(is|means|are) safe\b/i);
+  });
+});

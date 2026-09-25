@@ -1,3 +1,4 @@
+import { publisherIdFor } from "@vellar/service-kit";
 import type { ContractArtifactResolver } from "./resolver";
 import { ArtifactResolveError } from "./resolver";
 import type { VerificationOutcome } from "./verify";
@@ -5,7 +6,9 @@ import type { VerificationOutcome } from "./verify";
 // The attestor: mirrors verification outcomes into the on-chain
 // AttestationRegistry (docs/design-provenance-gated-spending.md §Component 3).
 //
-//   verified (with a rebuilt hash)  → upsert(contract, hash, now + TTL)
+//   verified (with a rebuilt hash)  → upsert(contract, hash, now + TTL), or
+//                                     upsertWithPublisher(...) when the record's
+//                                     repoUrl attributes the source to an owner
 //   failed                          → revoke IF currently attested
 //   upgrade sweep                   → revoke when the live on-chain wasm hash
 //                                     no longer matches the attested one, or
@@ -26,6 +29,15 @@ import type { VerificationOutcome } from "./verify";
  * `registry-submitter.ts`; faked in tests. */
 export interface AttestationSubmitter {
   upsert(contractId: string, wasmHashHex: string, expiresLedger: number): Promise<void>;
+  /** Attributed attestation: same as `upsert` plus the 32-byte publisher id
+   * (hex) derived from the verified source's owner (`publisherIdFor`). Consumed
+   * by the verified-recipient policy's trusted-publishers mode. */
+  upsertWithPublisher(
+    contractId: string,
+    wasmHashHex: string,
+    publisherIdHex: string,
+    expiresLedger: number,
+  ): Promise<void>;
   revoke(contractId: string): Promise<void>;
   /** Whether the registry currently holds an attestation for the contract
    * (live or logically expired). Used to avoid paying for no-op revokes. */
@@ -52,9 +64,21 @@ export interface AttestorDeps {
   metrics?: AttestorMetrics;
 }
 
+/** Where the verified source came from — drives publisher attribution. */
+export interface AttestationSource {
+  /** The record's repository URL (repo-sourced verifications only). */
+  repoUrl?: string;
+}
+
 export interface Attestor {
-  /** Mirror one verification outcome. Never throws. */
-  reportOutcome(contractId: string, outcome: VerificationOutcome): Promise<void>;
+  /** Mirror one verification outcome. Never throws. When `source.repoUrl`
+   * identifies a repository owner the attestation is attributed to that
+   * publisher; otherwise it is written unattributed (verified, never trusted). */
+  reportOutcome(
+    contractId: string,
+    outcome: VerificationOutcome,
+    source?: AttestationSource,
+  ): Promise<void>;
   /** Revoke attestations whose contract was upgraded (live hash drift) or
    * deleted. Never throws; returns how many were revoked. */
   runUpgradeSweep(
@@ -74,7 +98,7 @@ export function createAttestor(deps: AttestorDeps): Attestor {
   const metrics = deps.metrics ?? noopMetrics;
 
   return {
-    async reportOutcome(contractId, outcome) {
+    async reportOutcome(contractId, outcome, source) {
       try {
         if (outcome.status === "verified") {
           if (!outcome.outputHash) {
@@ -84,9 +108,21 @@ export function createAttestor(deps: AttestorDeps): Attestor {
             return;
           }
           const now = await deps.submitter.currentLedger();
-          await deps.submitter.upsert(contractId, outcome.outputHash, now + ttl);
+          const publisher = source?.repoUrl ? publisherIdFor(source.repoUrl) : undefined;
+          if (publisher) {
+            await deps.submitter.upsertWithPublisher(
+              contractId,
+              outcome.outputHash,
+              publisher,
+              now + ttl,
+            );
+          } else {
+            await deps.submitter.upsert(contractId, outcome.outputHash, now + ttl);
+          }
           metrics.attestation("upserted");
-          log.info(`attestor: attested ${contractId} (expires in ${ttl} ledgers)`);
+          log.info(
+            `attestor: attested ${contractId} (${publisher ? "attributed" : "unattributed"}, expires in ${ttl} ledgers)`,
+          );
           return;
         }
 
