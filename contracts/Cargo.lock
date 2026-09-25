@@ -1725,6 +1725,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vela-threshold-attestor"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "soroban-sdk",
+ "vela-attestation-registry",
+]
+
+[[package]]
 name = "vela-token-spending-limit-policy"
 version = "0.1.0"
 dependencies = [
