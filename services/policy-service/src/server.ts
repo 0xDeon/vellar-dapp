@@ -20,6 +20,20 @@ import {
   type TxLookup,
 } from "./verify-attach";
 import { createCsrfPreHandler, generateCsrfToken } from "./csrf";
+import {
+  simulatePolicyDeploy,
+  deployPolicyInstance,
+  verifyAndRecordAttach,
+  type DeploymentDeps,
+} from "./deployment";
+import {
+  generateBodySchema,
+  deployBodySchema,
+  deployInstanceBodySchema,
+  validatePolicyDefinition as validateDefinition,
+  validatePolicyInstance,
+  validatePolicyForDeployment,
+} from "./validation";
 
 // Policy API (idea.md §11): validate → generate → (review) → deploy.
 // Generated policies persist for review/deploy (idea.md §9 policies table —
@@ -101,6 +115,17 @@ export function buildServer(deps: PolicyServiceDeps = {}): FastifyInstance {
   const networkPassphrase = deps.networkPassphrase ?? "Test SDF Network ; September 2015";
   const csrfSecret =
     deps.csrfSecret ?? process.env.CSRF_SECRET ?? "vellar-policy-admin-csrf-default-secret";
+
+  const deploymentDeps: DeploymentDeps = {
+    policies,
+    deployer,
+    verifyAttach,
+    budget: deps.budget,
+    budgetNetwork: deps.budgetNetwork,
+    network,
+    networkPassphrase,
+    now,
+  };
 
   const app = Fastify({ logger: true });
   registerHealth(app, "policy-service", { isReady: deps.isReady });

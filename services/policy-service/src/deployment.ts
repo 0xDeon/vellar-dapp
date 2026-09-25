@@ -38,6 +38,12 @@ export interface DeploymentDeps {
   deployer?: PolicyDeployer;
   /** RPC transaction lookup for L1 attach verification. Undefined = verification disabled. */
   verifyAttach?: TxLookup;
+  /** Function to verify attach transaction on-chain. Defaults to verifyAttachTx. */
+  verifyAttachTx?: (
+    lookup: TxLookup,
+    target: { txHash: string; network: Network; wallet: string; policyContractId: string },
+    networkPassphrase?: string,
+  ) => Promise<void>;
   /** Rolling-window spend budget for "deploy" line. Undefined = budget check disabled. */
   budget?: SpendBudget;
   /** Network label for budget accounting (from server config, never request body). */
@@ -189,7 +195,8 @@ export async function verifyAndRecordAttach(
     const networkPassphrase = deps.networkPassphrase ?? "Test SDF Network ; September 2015";
 
     try {
-      await verifyAttachTx(
+      const verifyFn = deps.verifyAttachTx ?? verifyAttachTx;
+      await verifyFn(
         deps.verifyAttach,
         {
           txHash,

@@ -5,6 +5,7 @@ import {
   createMemoryVerificationRepository,
   createNoopBuildJobQueue,
   fakeFacilitatorClient,
+  toPublic,
   type VerificationRepository,
 } from "@vellar/verification-service/server";
 import { stubBuildExecutor } from "./executor";
@@ -132,7 +133,11 @@ async function status(server: FastifyInstance, contractId: string) {
 describe("verify contract source — full pipeline (idea.md §15)", () => {
   it("submit → worker build → hash match → verified, reflected in the status API", async () => {
     const records = createMemoryVerificationRepository();
-    app = buildServer({ records, queue: createNoopBuildJobQueue(), x402FacilitatorClient: fakeFacilitatorClient() });
+    app = buildServer({
+      records,
+      queue: createNoopBuildJobQueue(),
+      x402FacilitatorClient: fakeFacilitatorClient(),
+    });
 
     // Deployed hash == what the stub build produces for this job ⇒ a real match.
     const executor = stubBuildExecutor();
@@ -157,7 +162,11 @@ describe("verify contract source — full pipeline (idea.md §15)", () => {
 
   it("submit → build → hash mismatch → failed, with both hashes in the record", async () => {
     const records = createMemoryVerificationRepository();
-    app = buildServer({ records, queue: createNoopBuildJobQueue(), x402FacilitatorClient: fakeFacilitatorClient() });
+    app = buildServer({
+      records,
+      queue: createNoopBuildJobQueue(),
+      x402FacilitatorClient: fakeFacilitatorClient(),
+    });
 
     const resolver = createStaticArtifactResolver({ [C_MISMATCH]: "d".repeat(64) });
     const store = jobStoreOver(records, [C_MISMATCH]);
@@ -167,22 +176,28 @@ describe("verify contract source — full pipeline (idea.md §15)", () => {
 
     expect(await status(app, C_MISMATCH)).toBe("failed");
 
-    // GET /verification/:contractId is x402-gated (402 without a real payment);
-    // read directly from the in-memory repository to assert the record fields.
-    const found = await records.findByContract(C_MISMATCH);
-    const record = found[0];
-    expect(record.status).toBe("failed");
-    expect(record.deployedHash).toBe("d".repeat(64));
-    expect(record.outputHash).toBeTruthy();
+    // /verification/:contractId is x402-gated, so unauthenticated requests receive 402
+    const history = await app.inject({ method: "GET", url: `/verification/${C_MISMATCH}` });
+    expect(history.statusCode).toBe(402);
+
+    const [stored] = await records.findByContract(C_MISMATCH);
+    expect(stored.status).toBe("failed");
+    expect(stored.deployedHash).toBe("d".repeat(64));
+    expect(stored.outputHash).toBeTruthy();
+
+    // Public API exposes the sanitized statusDetail, not the raw log (H3/FIX 6).
+    const record = toPublic(stored);
     expect(record.statusDetail).toContain("does not match");
-    // log is the PRIVATE field — it IS set internally (build output) but
-    // the public HTTP API strips it (toPublic). Verify the private record has it.
-    expect(record.log).toBeTruthy();
+    expect((record as Record<string, unknown>).log).toBeUndefined();
   });
 
   it("a contract that can't be resolved on-chain fails with a clear reason (no build)", async () => {
     const records = createMemoryVerificationRepository();
-    app = buildServer({ records, queue: createNoopBuildJobQueue(), x402FacilitatorClient: fakeFacilitatorClient() });
+    app = buildServer({
+      records,
+      queue: createNoopBuildJobQueue(),
+      x402FacilitatorClient: fakeFacilitatorClient(),
+    });
 
     const resolver = createStaticArtifactResolver({}); // nothing resolves
     const store = jobStoreOver(records, [C_MATCH]);
@@ -191,10 +206,14 @@ describe("verify contract source — full pipeline (idea.md §15)", () => {
     await runWorkerTick({ store, executor: stubBuildExecutor(), resolver });
 
     expect(await status(app, C_MATCH)).toBe("failed");
-    // Read from the repository directly (same reason as above — x402 gates GET).
-    const found = await records.findByContract(C_MATCH);
-    expect(found[0].statusDetail).toContain("Could not resolve");
-    // verify.ts sets log to the resolve-error message; no build log is appended.
-    expect(found[0].log).toContain("Could not resolve");
+
+    // /verification/:contractId is x402-gated
+    const history = await app.inject({ method: "GET", url: `/verification/${C_MATCH}` });
+    expect(history.statusCode).toBe(402);
+
+    const [stored] = await records.findByContract(C_MATCH);
+    const record = toPublic(stored);
+    expect(record.statusDetail).toContain("Could not resolve");
+    expect((record as Record<string, unknown>).log).toBeUndefined();
   });
 });

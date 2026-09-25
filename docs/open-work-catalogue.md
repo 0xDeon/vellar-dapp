@@ -131,11 +131,12 @@ constraints are the difference between a real feature and security theatre.
 Found during a stack audit on 2026-09-05/06. None of these are BUILD-PLAN items,
 but all are real:
 
-- **Web app test suite: 0 failures (62 passing).** A false report of 34 failures
-  on 2026-09-06 was caused by invoking vitest directly without the
-  `NODE_OPTIONS=--no-experimental-webstorage` flag that the package script sets.
-  The flag has been moved into `vitest.config.ts` and the suite now passes under
-  any invocation method.
+- **Web app test suite: 0 failures (116 passing as of 2026-09-25).** Previously
+  recorded as 62 passing, the suite grew to 116 tests. An audit on 2026-09-23 found
+  8 failures across `app/dashboard/page.test.tsx` and `lib/analytics.test.ts`
+  caused by unhandled undefined values in `hashSensitiveValue` and test queue pollution
+  from `getQueue()` returning a shallow clone. These were resolved on 2026-09-25
+  alongside adding `clearQueue()`, restoring full green across all 116 tests.
 - **The explorer has no tests and no CI.** It is the strongest piece of external
   evidence in the pitch and its correctness is unguarded. It has already shipped
   one classifier bug that silently missed a settlement.

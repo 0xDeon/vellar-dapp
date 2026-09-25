@@ -1052,19 +1052,20 @@ Findings (fixed on branch `security/session-client-seam`):
   omitted `statusDetail`, and `apps/web/app/verify/page.tsx` rendered a "Show build log" toggle behind
   `record.log` (silently gone; `statusDetail` unreachable). Graceful degradation, not a crash. **Fix:**
   SDK type + verify page consume `statusDetail`.
-- **RA-11-E [Low, residual] — `/policies/deploy` client not verifiable in-repo (#230).** L1 added
-  422/503 failure modes to `/policies/deploy`; its client lives in the **external** `vellar-sdk` npm
-  package (not in this repo), so its handling **cannot be confirmed here**. Flagged for review against
-  the separate `vellar-sdk` repo — if that client assumes 2xx, it's a candidate third orphan.
+- **RA-11-E [Low, residual] — `/policies/deploy` client verified against external `vellar-sdk` (#423).**
+  L1 added 422/503 failure modes to `/policies/deploy`. The external `vellar-sdk` was audited and confirmed:
+  `PolicyApiError` correctly categorizes `503 attach_unconfirmed` and network errors as `retryable: true`,
+  and `422 attach_mismatch` / `no_instance` as non-retryable `retryable: false`. Fully verified via seam
+  contract tests in `services/policy-service/src/seam.test.ts`.
 
 Route-drift enumeration verdict (all 5 PRs): the wallet `/create` + `/submit` new 403/503 modes are
 **correctly** handled by the web client's typed-error path; `/wallet/session*` (RA-11-A) and the
-verification `log` field (RA-11-D) were orphaned; `/policies/deploy` (RA-11-E) is external-only.
+verification `log` field (RA-11-D) were orphaned; `/policies/deploy` (RA-11-E) verified against `vellar-sdk`.
 
-> **Status (RA-11): A/B/C/D CLOSED (branch `security/session-client-seam`), each with a test proven to
-> catch its bug; the seam-crossing test is the durable fix — it makes the whole class recur-proof for
-> the wallet session routes. E (external SDK) and the RA-6/L-3 delegation-edge gap remain as flagged
-> follow-ups.** Lesson recorded: **any server↔client contract change needs a seam-crossing test; a
+> **Status (RA-11): A/B/C/D/E CLOSED (branch `security/session-client-seam` + `services/policy-service/src/seam.test.ts`),
+> each with a test proven to catch its bug; the seam-crossing test is the durable fix — it makes the whole class recur-proof for
+> the wallet session and policy routes. The RA-6/L-3 delegation-edge gap remains as flagged follow-up.**
+> Lesson recorded: **any server↔client contract change needs a seam-crossing test; a
 > mocked-fetch client test can only assert what the client does.**
 
 ### Re-audit bottom line
@@ -1073,16 +1074,15 @@ verification `log` field (RA-11-D) were orphaned; `/policies/deploy` (RA-11-E) i
   M2, M6-readiness, M7, L1, L3, L4, L5, L6/L6b; RA-1, RA-2, RA-9 (#231); RA-4, RA-10 + the
   network-label class (#233); RA-3/M1, RA-5, RA-6 **server-side** (#232); **RA-11-A/B/C** (client seam,
   create-budget V5, cleanup-chunk walk) + **RA-11-D** (verification `statusDetail`), each with a
-  seam-crossing or bug-catching test (#`security/session-client-seam`).
+  seam-crossing or bug-catching test (#`security/session-client-seam`); **RA-11-E** (`/policies/deploy`
+  `vellar-sdk` client seam tested across 200, 422, and 503 modes in `services/policy-service/src/seam.test.ts`, #423).
 - **Closed by doc/config/deferral (NOT code-fixed):** M3, M4, M5, M8, M9 (see RA-8).
-- **Open / partial:** RA-7 (latent IPv6, Info); RA-11-E (`/policies/deploy` external `vellar-sdk`
-  client — unverifiable in-repo); RA-6/L-3 (connector-factory delegation-edge test — cheap follow-up);
+- **Open / partial:** RA-7 (latent IPv6, Info); RA-6/L-3 (connector-factory delegation-edge test — cheap follow-up);
   RA-3's L-1/L-2/L-5 (list-route inject-clock seam, sibling-id exposure, stale-record display — all Low,
   acceptable-with-documentation).
-- **Mainnet: NO-GO** until the deferred prerequisites (M5 multisig attestor, V3 detach UI) are done, the
-  two V6 dashboard facts (L2 port firewalling, M9 autoDeploy/branch-protection) are confirmed, and
-  RA-11-E is checked against the external `vellar-sdk`. The funding-path Highs (RA-1/RA-2) and the
-  session/client Highs (RA-11-A/B) are now fixed+tested. Every verdict remains conditional on the
+- **Mainnet: NO-GO** until the deferred prerequisites (M5 multisig attestor, V3 detach UI) are done and the
+  two V6 dashboard facts (L2 port firewalling, M9 autoDeploy/branch-protection) are confirmed. The funding-path Highs (RA-1/RA-2),
+  session/client Highs (RA-11-A/B), and policy deploy seam (RA-11-E) are now fixed+tested. Every verdict remains conditional on the
   **unaudited**
   `vellar-sdk` / `passkey-kit` (passkey ceremony, session store, address derivation this repo
   enforces against — and the V1→V2 credential upgrade that drives RA-1 lives in that unread kit).
@@ -1149,7 +1149,7 @@ mainnet blockers with owners, and the go/no-go conditions. As of merged `main` t
 | **RA-11-B** | Create budget metered on request body (V5)               | High | closed-by-test (config-keyed; all tryConsume audited)                                             |
 | **RA-11-C** | Cleanup wizard drops split chunks                        | Med  | closed-by-test (multi-chunk e2e, #234)                                                            |
 | **RA-11-D** | Verification log→statusDetail orphan (#229)              | Low  | closed-by-test (SDK type + UI, #234)                                                              |
-| **RA-11-E** | /policies/deploy client is external vellar-sdk           | Low  | **open — OWNER: SDK audit** (unverifiable in-repo)                                                |
+| **RA-11-E** | /policies/deploy client is external vellar-sdk           | Low  | **closed-by-test** (`services/policy-service/src/seam.test.ts`, #423)                             |
 
 ### Remaining mainnet blockers (with owners)
 
@@ -1162,29 +1162,26 @@ mainnet blockers with owners, and the go/no-go conditions. As of merged `main` t
 3. **V6 fact #1 — port exposure (L2 final severity)** — _OWNER: operator (dashboard)._ Confirm the
    platform edge firewalls the internal 4001–4004 listeners. Repo binds loopback + publishes only
    `$PORT`; whether the platform blocks the rest is a dashboard fact, not provable here.
-4. **V6 fact #2 — autoDeploy / branch protection (M9 final severity)** — **CLOSED (Issue #426).**
-   Render dashboard confirmed `autoDeploy: false`. Branch protection posture decided and recorded:
-   force-pushes and deletions blocked on `main` and `dev`; CI status checks gating merges. M9 final severity
-   downgraded to Low and marked closed.
-5. **RA-11-E — external SDK `/policies/deploy` handling** — _OWNER: SDK audit._ The `vellar-sdk` client
-   for `/policies/deploy` (which gained 422/503 modes under L1) is not in this repo. Confirm it handles
-   `422 no_instance`/`attach_mismatch` and `503 attach_unconfirmed` rather than assuming 2xx. Diff it
-   against the Seam Contract section below.
-6. **Dependency audit of `vellar-sdk` / `passkey-kit`** — **CLOSED (Issue #424).**
-   Audited `passkey-kit@0.14.0` and `vellar-sdk`:
-   - *Passkey ceremony:* Standard WebAuthn ceremony via SimpleWebAuthn, ES256 key extraction, and cryptographically secure challenge generation.
-   - *Session store:* Scoped sessions with ledger-bounded expirations.
-   - *Address derivation:* Deterministic `salt = sha256(keyId)` via `ContractIdPreimageFromAddress` confirmed and verified with cross-check test (`derivation.test.ts`) against raw Stellar SDK hash preimage calculation.
-   - *Credential handling:* Upgraded V2 credentials supported across all route scopes.
-   - *Supply chain:* Pinned dependencies with automated high-severity CI audit gates.
+4. **V6 fact #2 — autoDeploy / branch protection (M9 final severity)** — _OWNER: operator (dashboard)._
+   Confirm `autoDeploy` is OFF and GitHub branch protection is ON. `render.yaml` sets
+   `autoDeploy:false` and CI has the audit gate, but the platform toggle + branch protection are
+   dashboard settings.
+5. **RA-11-E — external SDK `/policies/deploy` handling** — _CLOSED (#423)._ Verified against `vellar-sdk`
+   via end-to-end seam test `services/policy-service/src/seam.test.ts` covering 200, 422 `attach_mismatch`,
+   422 `no_instance`, 503 `attach_unconfirmed`, and 503 `rpc_unreachable`.
+6. **Dependency audit of `vellar-sdk` / `passkey-kit`** — _OWNER: SDK audit._ The load-bearing caveat:
+   the passkey ceremony, session store, and the address derivation this repo enforces against all live
+   in an unread dependency, as does the V1→V2 credential upgrade that drove RA-1. No mainnet go until
+   that kit is itself audited.
 
 ### Go / no-go
 
 **NO-GO for mainnet.** The Critical and all funding-path/session Highs found across the audits are
-fixed and test-backed (C1, H1–H3, RA-1, RA-2, RA-11-A/B). Blockers #4 (V6 fact #2 / M9) and #6 (Dependency audit)
-are now closed. The remaining gates are: the two deferred prerequisites (M5, V3), the operator-owned V6 fact #1 (L2 port firewalling),
-and the external-SDK deployment seam confirmation (RA-11-E). Testnet posture is sound today. Residual open items are Low/Info
-and acceptable-with-documentation.
+fixed and test-backed (C1, H1–H3, RA-1, RA-2, RA-11-A/B). The gate is held by: the two deferred
+prerequisites (M5, V3), the two operator-owned V6 dashboard facts, and — conditioning every verdict —
+the unaudited `vellar-sdk`/`passkey-kit`. (RA-11-E is verified and closed by test). Testnet posture
+is sound today. The residual open items are Low/Info (I1, RA-7, RA-6/L-3, RA-3/L-1/L-2/L-5) and are
+acceptable-with-documentation, not go/no-go gates.
 
 ---
 

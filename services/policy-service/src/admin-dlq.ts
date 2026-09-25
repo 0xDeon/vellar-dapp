@@ -130,7 +130,7 @@ export function registerAdminDLQRoutes(app: FastifyInstance, deps: AdminDLQDeps)
 
     const dlqId = request.params.id;
 
-    const dlqRecord = await dlqStore.find(dlqId);
+    const dlqRecord = await dlqStore.find(dlqId, { includeArchived: true });
     if (!dlqRecord) {
       return reply.code(404).send({ error: "not_found", message: "DLQ entry not found" });
     }
@@ -169,7 +169,7 @@ export function registerAdminDLQRoutes(app: FastifyInstance, deps: AdminDLQDeps)
         updated_at: now,
       });
 
-      if (dlqMetrics) {
+      if (dlqMetrics?.dlq_requeue_total) {
         dlqMetrics.dlq_requeue_total.inc({ job_type: dlqRecord.job_type });
       }
 

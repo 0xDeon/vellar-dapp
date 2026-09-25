@@ -68,6 +68,27 @@ export const pairStatusRequestSchema = z.object({
   }),
 });
 
+export const signAuthEntryRequestSchema = z.object({
+  method: z.literal("sign_auth_entry"),
+  params: z.object({
+    authEntry: z.string().min(1),
+    network: networkSchema,
+  }),
+});
+
+export const signMessageRequestSchema = z.object({
+  method: z.literal("sign_message"),
+  params: z.object({
+    message: z.string().min(1),
+    network: networkSchema,
+  }),
+});
+
+export const getNetworkRequestSchema = z.object({
+  method: z.literal("get_network"),
+  params: z.object({}).optional().default({}),
+});
+
 export const providerRequestSchema = z.discriminatedUnion("method", [
   connectRequestSchema,
   signTransactionRequestSchema,
@@ -75,6 +96,9 @@ export const providerRequestSchema = z.discriminatedUnion("method", [
   disconnectRequestSchema,
   pairRequestSchema,
   pairStatusRequestSchema,
+  signAuthEntryRequestSchema,
+  signMessageRequestSchema,
+  getNetworkRequestSchema,
 ]);
 
 export type ProviderRequest = z.infer<typeof providerRequestSchema>;
@@ -99,7 +123,11 @@ export const providerResultSchema = z.union([
   }),
   z.object({
     method: z.literal("sign_transaction"),
-    result: z.object({ signedXdr: z.string().min(1) }),
+    result: z.object({
+      signedXdr: z.string().min(1),
+      signedTxXdr: z.string().min(1).optional(),
+      signerAddress: z.string().optional(),
+    }),
   }),
   z.object({
     method: z.literal("get_address"),
@@ -119,6 +147,27 @@ export const providerResultSchema = z.union([
   z.object({
     method: z.literal("pair_status"),
     result: z.object({ paired: z.boolean() }),
+  }),
+  z.object({
+    method: z.literal("sign_auth_entry"),
+    result: z.object({
+      signedAuthEntry: z.string().min(1),
+      signerAddress: z.string().optional(),
+    }),
+  }),
+  z.object({
+    method: z.literal("sign_message"),
+    result: z.object({
+      signedMessage: z.string().min(1),
+      signerAddress: z.string().optional(),
+    }),
+  }),
+  z.object({
+    method: z.literal("get_network"),
+    result: z.object({
+      network: z.string().min(1),
+      networkPassphrase: z.string().min(1),
+    }),
   }),
 ]);
 

@@ -369,7 +369,7 @@ describe("GET /verification/:contractId/status", () => {
 
   it("returns the latest record's status", async () => {
     const records = createMemoryVerificationRepository();
-    app = buildServer({ records });
+    app = buildServer({ records, x402FacilitatorClient: fakeFacilitatorClient() });
     const submit = await app.inject({
       method: "POST",
       url: "/verification/submit",

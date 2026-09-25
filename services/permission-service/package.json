@@ -17,6 +17,7 @@
     "vitest": "^3.2.0"
   },
   "dependencies": {
+    "@vellar/provider-sdk": "workspace:*",
     "@vellar/service-kit": "workspace:*",
     "@vellar/types": "workspace:*",
     "drizzle-orm": "^0.45.2",
